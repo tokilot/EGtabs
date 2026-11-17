@@ -1,0 +1,19 @@
+/*
+ * The desktop pet's window (desktop/): see-through, the pet in its bottom-left corner as on the page, with no control
+ * bar under it.
+ */
+:root {
+  --controlbar-height: 0px;
+  /* The bubble may use the window's height over the pet and the input box. */
+  --bubble-max-height: calc(100vh - 260px);
+}
+
+html,
+body,
+#root {
+  background: transparent;
+}
+
+body {
+  user-select: none;
+}

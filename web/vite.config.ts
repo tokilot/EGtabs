@@ -16,4 +16,6 @@ export default defineConfig({
   // The page on 7273, the backend on 7274 (2026-11-10).
   server: { port: 7273, proxy: { '/api': API } },
   preview: { proxy: { '/api': API } },
+  // Two pages: the app, and the desktop pet's window (desk.html, loaded by desktop/).
+  build: { rollupOptions: { input: { main: 'index.html', desk: 'desk.html' } } },
 })

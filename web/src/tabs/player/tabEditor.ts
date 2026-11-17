@@ -658,6 +658,45 @@ export class TabEditor {
     return true
   }
 
+  /**
+   * Runs several edits as one step of the history (the assistant's edits, 2026-11-12): one undo takes them all
+   * back, last first. Returns that step's handle (for undoing it later), or null when nothing changed.
+   */
+  group(run: () => void): object | null {
+    const start = this.undoStack.length
+    const changesBefore = this.changes
+    try {
+      run()
+    } finally {
+      const operations = this.undoStack.splice(start)
+      if (operations.length > 0) {
+        const operation: Operation = {
+          undo: () => {
+            for (const item of [...operations].reverse()) {
+              item.undo()
+              this.finish()
+            }
+          },
+          redo: () => {
+            for (const item of operations) {
+              item.redo()
+              this.finish()
+            }
+          },
+        }
+        this.undoStack.push(operation)
+        this.changes = changesBefore + 1
+      }
+    }
+    return this.undoStack.length > start ? this.undoStack[this.undoStack.length - 1] : null
+  }
+
+  /** Undoes the step `handle` names, when it is still the last one (nothing was changed after it). */
+  undoStep(handle: object): boolean {
+    if (this.undoStack[this.undoStack.length - 1] !== handle) return false
+    return this.undo()
+  }
+
   // ---- notes ----
 
   /**

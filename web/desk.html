@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Tabs</title>
+    <script>
+      // Same rule as src/shared/ui/theme.ts, run early to avoid a flash of the other theme.
+      ;(function () {
+        var theme = null
+        try {
+          theme = localStorage.getItem('tabs.theme')
+        } catch (error) {}
+        if (theme !== 'light' && theme !== 'dark') theme = matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
+        document.documentElement.dataset.theme = theme
+      })()
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script>
+      // The desktop pet's window: the page-sized pet, whatever the window's width (Assistant.module.css).
+      document.documentElement.dataset.desk = ''
+    </script>
+    <script type="module" src="/src/desk/main.tsx"></script>
+  </body>
+</html>

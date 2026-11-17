@@ -1,0 +1,29 @@
+/*
+ * The pet: the girl's part of a 16:9 frame (960 × 540; she stands in x 296–708, y 64–501), as wide as the pet's box
+ * and standing on its bottom edge. Percentages of the figure, so it scales with the box.
+ */
+.pet {
+  position: relative;
+  width: 100%;
+  height: 100%;
+}
+
+.figure {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  width: 100%;
+  aspect-ratio: 412 / 437;
+}
+
+.picture {
+  position: absolute;
+  /* 296 / 412, 64 / 437, 960 / 412 */
+  left: -71.84%;
+  top: -14.65%;
+  width: 233.01%;
+  height: auto;
+  max-width: none;
+  user-select: none;
+  pointer-events: none;
+}

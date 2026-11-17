@@ -30,7 +30,6 @@ import type { Revision } from '../api.ts'
 import { useSong } from '../library/useSong.ts'
 import { BPM_MAX, BPM_MIN, DENOMINATORS } from '../player/clicks.ts'
 import { SPEED_MAX, SPEED_MIN, TRANSPOSE_MAX, TRANSPOSE_MIN, type Preferences } from '../player/controller.ts'
-import { KEY_CHOICES, keyLabel, transposeKey } from '../player/solfege.ts'
 import { usePlayer } from '../player/usePlayer.ts'
 import { TrackList } from '../player/TrackList.tsx'
 import { setLanguagePreference, useLanguage, type LanguagePreference } from '../../shared/ui/i18n.ts'
@@ -38,7 +37,7 @@ import { Popover } from '../../shared/ui/Popover.tsx'
 import { setThemePreference, useTheme, type ThemePreference } from '../../shared/ui/theme.ts'
 import styles from './ControlBar.module.css'
 
-type PanelId = 'tracks' | 'speed' | 'transpose' | 'metronome' | 'history' | 'settings' | 'key'
+type PanelId = 'tracks' | 'speed' | 'transpose' | 'metronome' | 'history' | 'settings'
 
 const THEMES: Array<{ value: ThemePreference; label: string; icon: LucideIcon }> = [
   { value: 'system', label: '跟随系统', icon: SunMoon },
@@ -137,9 +136,8 @@ export function ControlBar() {
 
   return (
     <footer className={styles.controlBar}>
-      <div className={styles.side}>
-        {state.noteNames && popover('key', <NoteNamesBox onClick={() => toggle('key')} />, <KeyPanel onPick={close} />, t('唱名的调'))}
-      </div>
+      {/* Empty, so the buttons stay centred (the note names went to the pet, 2026-11-18). */}
+      <div className={styles.side} />
       <div className={styles.buttons}>
         {popover(
           'tracks',
@@ -544,48 +542,3 @@ function RevisionList({ songId, currentRevisionId, onSwitch }: RevisionListProps
   )
 }
 
-/** The solfège of the beat at the cursor, so the notes can be sung or named while practising. Opens the key menu. */
-function NoteNamesBox({ onClick }: { onClick: () => void }) {
-  const { state } = usePlayer()
-  const { t } = useLanguage()
-  const notes = state.noteNames
-  if (!notes) return null
-  const text = notes.percussion ? '—' : notes.names.join(' ')
-  return (
-    <button type="button" className={styles.noteNames} aria-label={t('唱名')} onClick={onClick}>
-      <span className={styles.noteNamesKey}>
-        {notes.key}
-        {notes.manual && <span className={styles.noteNamesManual}>{t('手动')}</span>}
-      </span>
-      <span className={styles.noteNamesText} role="status" aria-label={t('当前唱名')}>
-        {text}
-      </span>
-    </button>
-  )
-}
-
-/** Which key the note names are read in: the tab's own, or one of the twelve major keys. */
-function KeyPanel({ onPick }: { onPick: () => void }) {
-  const { state, player } = usePlayer()
-  const { t } = useLanguage()
-  const tabKey = state.noteNames?.tabKey ?? '1=C'
-  // A picked key is stored for the untransposed tab; what is shown is moved with the transposition.
-  const pick = (key: number | null) => {
-    player.setManualKey(key)
-    onPick()
-  }
-  return (
-    <div className={styles.keyPanel}>
-      <button type="button" className={styles.keyFollow} aria-pressed={state.manualKey === null} onClick={() => pick(null)}>
-        {t('跟随谱子（{key}）', { key: tabKey })}
-      </button>
-      <div className={styles.keyGrid}>
-        {KEY_CHOICES.map((key) => (
-          <button key={key} type="button" aria-pressed={state.manualKey === key} onClick={() => pick(key)}>
-            {keyLabel(transposeKey(key, state.transpose))}
-          </button>
-        ))}
-      </div>
-    </div>
-  )
-}

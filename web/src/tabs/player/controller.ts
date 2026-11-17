@@ -12,8 +12,10 @@ import type { Tone, ToneFamily } from '../../audio/tone.ts'
 import { DEFAULT_TONE_LIBRARY, findTone, type ToneLibrary } from '../../tones/library.ts'
 import { beatSolfege, type NoteNames } from './solfege.ts'
 import { transposeScore } from './transpose.ts'
+import { barsText, scoreOverview, type ScoreOverview } from './scoreText.ts'
 import { repairDrumArticulations } from './drumArticulations.ts'
 import { noteArticulation } from './drumPieces.ts'
+import { applyEdits, type EditOutcome } from './tabEdits.ts'
 import { cleanTrackSwitches, switchesAfterRemoval, switchesFromOld, trackForBar, withTrackSwitch, type TrackSwitches } from './trackSwitches.ts'
 import { cleanTrackSounds, trackPresets, type ExtraSoundFont, type SoundFontEntry, type TrackSound, type TrackSounds } from './trackSounds.ts'
 
@@ -1555,6 +1557,51 @@ export class PlayerController {
     this.edit((editor) => editor.toggle(flag))
   }
 
+  /**
+   * The assistant's edits to a track (2026-11-12): the tab editor opens (if it is not open) on that track, and the
+   * edits are made as one step of its history, so the editor's undo takes them all back; they are saved, or
+   * dropped, with the editor like any other edit. `step` names that step for undoing it later (null: no change).
+   */
+  assistantEdit(track: number, edits: unknown): { outcome: EditOutcome | null; error: string | null; step: object | null } {
+    const api = this.api
+    if (!api || this.snapshot.status !== 'ready' || !this.baseScore) throw new Error('No song is open (or it is still loading).')
+    if (!this.track(track)) throw new Error(`There is no track ${track + 1}.`)
+    if (!this.snapshot.editing) this.startEditing()
+    if (track !== this.snapshot.trackIndex) this.selectTrack(track)
+    const editor = this.editorFor(track)
+    if (!editor) throw new Error('The tab editor could not be opened.')
+    const revision = editor.revision
+    let outcome: EditOutcome | null = null
+    let error: string | null = null
+    const step = editor.group(() => {
+      try {
+        outcome = applyEdits(editor, edits)
+      } catch (cause) {
+        error = (cause as Error).message
+      }
+    })
+    if (editor.revision !== revision) {
+      this.midiStale = true
+      api.renderer.renderScore(api.score!, [track])
+      this.refreshTrackNames(editor.score)
+    }
+    // The cursor (and the edit panel) on the last spot edited.
+    this.editSelected = true
+    this.publishEditing(true)
+    return { outcome, error, step }
+  }
+
+  /** Undoes the assistant's step on a track, when the editor is still open and nothing was changed after it. */
+  undoAssistantEdit(track: number, step: object): boolean {
+    const editor = this.snapshot.editing ? this.editors.get(track) : undefined
+    if (!editor || !this.api?.score || !editor.undoStep(step)) return false
+    this.midiStale = true
+    this.api.renderer.renderScore(this.api.score, [track])
+    this.refreshTrackNames(editor.score)
+    this.publishEditing(false)
+    return true
+  }
+
   /** Puts the edit cursor where the score was clicked: the beat under the pointer and the nearest string. */
   editClickAt(clientX: number, clientY: number, extend = false) {
     const api = this.api
@@ -2042,6 +2089,57 @@ export class PlayerController {
   /** Where playback is, in MIDI ticks. For diagnostics and the end-to-end checks. */
   get tickPosition(): number {
     return this.api?.tickPosition ?? 0
+  }
+
+  // ---- for the assistant (2026-11-12): the tab as text, bars by number ----
+
+  /** The song as loaded (track edits in, not transposed): tracks, bars, changes of time signature and tempo. */
+  scoreOverview(): ScoreOverview | null {
+    return this.baseScore ? scoreOverview(this.baseScore) : null
+  }
+
+  /** Bars `from`..`to` (1-based) of a track (0-based) as text; throws with a reason the model can read. */
+  barsText(track: number, from: number, to: number): string {
+    if (!this.baseScore) throw new Error('No song is open.')
+    return barsText(this.baseScore, track, from, to)
+  }
+
+  /** Selects bars `from`..`to` (1-based, inclusive) as the playback (loop) range. False when it cannot be set yet. */
+  setBarRange(from: number, to: number): boolean {
+    const api = this.api
+    const bars = api?.tickCache?.masterBars
+    if (!api || !bars || bars.length === 0 || this.renderPending) return false
+    const first = clamp(Math.round(Math.min(from, to)), 1, bars.length) - 1
+    const last = clamp(Math.round(Math.max(from, to)), 1, bars.length) - 1
+    // Like alphaTab's own selection, the range stops just short of the last bar's end (on the end itself its
+    // highlight finds the next bar's first beat and draws one bar short).
+    const range = { startTick: bars[first].start, endTick: bars[last].end - 50 }
+    try {
+      api.playbackRange = range
+    } catch {
+      return false
+    }
+    this.update({ range })
+    return true
+  }
+
+  /** The selected playback range as bars (1-based, inclusive), or null when the whole song plays. */
+  rangeBars(): { from: number; to: number } | null {
+    const bars = this.api?.tickCache?.masterBars
+    const range = this.snapshot.range
+    if (!bars || bars.length === 0 || !range) return null
+    const at = (tick: number) => Math.max(0, bars.findIndex((bar) => tick >= bar.start && tick < bar.end))
+    return { from: at(range.startTick) + 1, to: at(Math.max(range.startTick, range.endTick - 1)) + 1 }
+  }
+
+  /** Moves the playback position to the start of a bar (1-based). */
+  seekToBar(bar: number) {
+    const api = this.api
+    const bars = api?.tickCache?.masterBars
+    if (!api || !bars || bars.length === 0) return
+    const tick = bars[clamp(Math.round(bar), 1, bars.length) - 1].start
+    api.tickPosition = tick
+    this.lastSeek = { tick, at: performance.now() }
   }
 
   // The synthesizer reports a new position a moment after it is set: quick key presses start from the bar asked for

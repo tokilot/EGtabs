@@ -1,0 +1,14 @@
+{
+  "name": "desktop",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "main": "main.ts",
+  "scripts": {
+    "start": "node launch.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "electron": "45.3.3"
+  }
+}

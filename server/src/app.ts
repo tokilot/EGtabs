@@ -1,8 +1,12 @@
 import { existsSync, mkdirSync, readdirSync, renameSync, rmSync } from 'node:fs'
 import path from 'node:path'
 import { Hono } from 'hono'
+import { Assistant, AssistantError } from './assistant.ts'
+import { assistantSetup, currentEnv, type AssistantSetup } from './env.ts'
 import { Library } from './db/library.ts'
 import { Playlists } from './db/playlists.ts'
+import { assistantRoutes } from './routes/assistant.ts'
+import { Persona } from './persona.ts'
 import { libraryRoutes } from './routes/library.ts'
 import { playlistRoutes } from './routes/playlists.ts'
 import { songRoutes } from './routes/songs.ts'
@@ -22,7 +26,8 @@ import { SoundFonts } from './soundFonts.ts'
 export interface AppOptions {
   /**
    * The user's own data: user.db (songs, settings, favourites' tabs, playlists, the tone library), songs/ (the tabs of
-   * the other songs), soundfonts/ and models/ (put there by hand), tmps/. Made, with those folders, when missing.
+   * the other songs), soundfonts/ and models/ (put there by hand), tmps/, assistant.md (the pet's personality).
+   * Made, with those folders and that file, when missing.
    */
   dataDir: string
   fetch?: typeof fetch
@@ -37,6 +42,8 @@ export interface AppOptions {
   resourcesDir?: string
   /** The tabs put in a new library on its first start; by default TABS_DEMO_SONGS, else resources/songs/demo/. */
   demoSongsDir?: string
+  /** The assistant's model; by default as .env.local sets it up (TABS_AI_BASE_URL, TABS_AI_MODEL, TABS_AI_API_KEY), read each time. */
+  assistant?: { setup: () => AssistantSetup; fetch?: typeof fetch }
   /**
    * What the server does when it starts: put the library's tabs where they belong, drop the songs whose tab is gone
    * from data/songs/, and empty data/tmps/ (separations, transcriptions). Not in the tests that make apps over and over.
@@ -58,7 +65,7 @@ function songCacheDir(dataDir: string) {
   return dir
 }
 
-/** The three parts, each with its own routes: the tabs (library and online tabs), the stems and MIDI transcriptions, the guitar tones. */
+/** The parts, each with its own routes: the tabs (library and online tabs), the stems and MIDI transcriptions, the guitar tones, the assistant. */
 export function createApp(options: AppOptions) {
   const separatorModels = process.env.TABS_SEPARATOR_MODELS ?? path.join(options.dataDir, 'models', 'separator')
   const transcriberModels = process.env.TABS_TRANSCRIBER_MODELS ?? path.join(options.dataDir, 'models', 'transcriber')
@@ -105,6 +112,7 @@ export function createApp(options: AppOptions) {
   app.onError((error, c) => {
     if (error instanceof SongsterrError) return c.json({ error: error.message }, error.status as 403 | 404 | 502)
     if (error instanceof StemError) return c.json({ error: error.message }, error.status)
+    if (error instanceof AssistantError) return c.json({ error: error.message }, error.status)
     console.error(error)
     return c.json({ error: 'Internal server error.' }, 500)
   })
@@ -116,6 +124,10 @@ export function createApp(options: AppOptions) {
   transcriptionRoutes(app, transcriptions)
   toneRoutes(app, tones)
   soundFontRoutes(app, soundFonts)
+  // data/assistant.md, the pet's personality: made from a template on the first start.
+  const persona = new Persona(path.join(options.dataDir, 'assistant.md'))
+  const setup = options.assistant?.setup ?? (() => assistantSetup(currentEnv()))
+  assistantRoutes(app, new Assistant(setup, options.assistant?.fetch, () => persona.forModel()), persona)
 
   // The server waits for this before it takes requests (see index.ts).
   const ready = options.atStartup

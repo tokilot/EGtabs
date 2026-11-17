@@ -5,7 +5,10 @@ import path from 'node:path'
 import { getRequestListener } from '@hono/node-server'
 import { createServer as createVite } from 'vite'
 import { createApp } from './app.ts'
+import { loadEnvFile } from './env.ts'
 import { reportStartup } from './startupReport.ts'
+
+loadEnvFile()
 
 const root = path.resolve(import.meta.dirname, '../..')
 const dataDir = path.resolve(process.env.TABS_DATA_DIR ?? path.join(root, 'data'))

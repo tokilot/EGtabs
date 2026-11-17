@@ -1,0 +1,394 @@
+/*
+ * The bottom-left corner, above the control bar's note-name box (same left edge): the pet with the input box under
+ * its feet (the corner's width), and the speech bubble at the upper right of its head, its right edge on the input
+ * box's.
+ * Above the score and the overlay pages, below popovers (z-index 900) and the track editor dialog.
+ */
+.corner {
+  position: fixed;
+  left: 12px;
+  bottom: calc(var(--controlbar-height) + 8px);
+  z-index: 800;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  width: min(400px, calc(100vw - 24px));
+  pointer-events: none;
+}
+
+.corner > * {
+  pointer-events: auto;
+}
+
+/* The pet, with its two buttons over its head. Only those and the pet take clicks: the row runs under the bubble's
+   lower edge, where its undo button is. */
+.stage {
+  position: relative;
+  display: flex;
+  align-items: center;
+  pointer-events: none;
+}
+
+.stage > * {
+  pointer-events: auto;
+}
+
+.menu {
+  position: absolute;
+  left: 10px;
+  bottom: calc(100% + 4px);
+  display: flex;
+  justify-content: center;
+  gap: 6px;
+  width: 118px;
+}
+
+.menuButton {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: 0 2px 6px var(--shadow);
+  cursor: pointer;
+  /* See-through until what it opens is open. */
+  opacity: 0.5;
+  transition: opacity 0.15s;
+}
+
+.menuButton:hover,
+.menuButton:focus-visible {
+  border-color: var(--accent);
+  opacity: 0.85;
+}
+
+.menuButton[aria-pressed='true'] {
+  opacity: 1;
+}
+
+.menuButton:disabled {
+  opacity: 0.25;
+  cursor: default;
+}
+
+.pet {
+  flex: none;
+  width: 118px;
+  height: 130px;
+  margin: 0 0 0 10px;
+  padding: 0;
+  border: none;
+  background: none;
+  border-radius: 50%;
+  /* Dragged to move it; a click shows its buttons. */
+  cursor: grab;
+  touch-action: none;
+}
+
+.pet:active {
+  cursor: grabbing;
+}
+
+.pet:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Performing: what it shows (the note names) where the bubble would be, on no background. */
+.performance {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  min-height: 54px;
+  margin: 0 0 -54px 134px;
+  align-items: flex-end;
+  pointer-events: none;
+}
+
+.performance > * {
+  pointer-events: auto;
+}
+
+/* A comic speech bubble: thick outline, white fill, a tail on its left pointing at the pet's head. */
+.bubble {
+  position: relative;
+  z-index: 1;
+  box-sizing: border-box;
+  /* Right of the pet (10 + 118 px) and down beside its head. */
+  margin: 0 0 -54px 134px;
+  padding: 12px 30px 12px 14px;
+  background: var(--surface);
+  color: var(--text);
+  border: 2.5px solid var(--text);
+  border-radius: 18px;
+  box-shadow: 4px 4px 0 var(--shadow);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.bubble::after,
+.bubble::before {
+  content: '';
+  position: absolute;
+  border-style: solid;
+}
+
+.bubble::before {
+  bottom: 8px;
+  left: -18px;
+  border-width: 4px 18px 12px 0;
+  border-color: transparent var(--text) transparent transparent;
+}
+
+.bubble::after {
+  bottom: 11px;
+  left: -12px;
+  border-width: 2px 13px 8px 0;
+  border-color: transparent var(--surface) transparent transparent;
+}
+
+.scroll {
+  /* The desktop pet's window gives it more room (desk.css). */
+  max-height: var(--bubble-max-height, min(40vh, 320px));
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.scroll p {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.scroll > * + * {
+  margin-top: 8px;
+}
+
+.question {
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.question::before {
+  content: '› ';
+}
+
+.reply {
+  font-weight: 500;
+}
+
+.muted {
+  color: var(--text-muted);
+}
+
+.error {
+  color: var(--danger);
+}
+
+.actions {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+.actions li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.actions li svg {
+  color: var(--accent);
+  flex: none;
+}
+
+.actions li.failed svg {
+  color: var(--danger);
+}
+
+.undone li {
+  text-decoration: line-through;
+}
+
+.undo {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface-raised);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.undo:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.close {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: none;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.close:hover {
+  background: var(--surface-raised);
+  color: var(--text);
+}
+
+.composer {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  box-sizing: border-box;
+  padding: 6px 6px 6px 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 22px;
+  box-shadow: 0 4px 16px var(--shadow);
+}
+
+.composer textarea {
+  flex: 1;
+  min-width: 0;
+  max-height: 96px;
+  resize: none;
+  border: none;
+  outline: none;
+  background: none;
+  color: var(--text);
+  font: inherit;
+  font-size: 14px;
+  field-sizing: content;
+}
+
+.icon {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: none;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.icon:hover:not(:disabled) {
+  background: var(--surface-raised);
+  color: var(--text);
+}
+
+.icon[type='submit']:not(:disabled) {
+  color: var(--accent);
+}
+
+.icon:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* Narrow pages: a smaller pet. Not in the desktop pet's window (html[data-desk]), narrow as it is: there it keeps the
+   page's size. */
+@media (max-width: 700px) {
+  :global(html:not([data-desk])) .pet {
+    width: 82px;
+    height: 90px;
+  }
+
+  :global(html:not([data-desk])) .menu {
+    width: 82px;
+    gap: 4px;
+  }
+
+  :global(html:not([data-desk])) .bubble,
+  :global(html:not([data-desk])) .performance {
+    margin: 0 0 -36px 98px;
+  }
+}
+
+/* The settings: data/assistant.md to edit, in the bubble's place (the whole corner's width). */
+.settings {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 10px;
+  padding: 12px 14px;
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 6px 24px var(--shadow);
+  font-size: 13px;
+}
+
+.settings h2 {
+  margin: 0;
+  font-size: 14px;
+}
+
+.settings p {
+  margin: 0;
+}
+
+.settings textarea {
+  box-sizing: border-box;
+  width: 100%;
+  height: min(40vh, 300px);
+  padding: 8px;
+  resize: vertical;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  font: 12px/1.5 ui-monospace, Consolas, monospace;
+}
+
+.settingsButtons {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.settingsButtons button {
+  padding: 5px 14px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-raised);
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+
+.settingsButtons .primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-text);
+}
+
+.settingsButtons button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}

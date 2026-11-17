@@ -1,5 +1,6 @@
 node_modules/
 dist/
+# Also the server's settings, keys included: .env.local (.env.example lists them).
 *.local
 .DS_Store
 web/public/font/

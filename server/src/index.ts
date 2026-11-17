@@ -3,7 +3,10 @@
 import path from 'node:path'
 import { serve } from '@hono/node-server'
 import { createApp } from './app.ts'
+import { loadEnvFile } from './env.ts'
 import { reportStartup } from './startupReport.ts'
+
+loadEnvFile()
 
 const dataDir = path.resolve(process.env.TABS_DATA_DIR ?? path.join(import.meta.dirname, '../../data'))
 const port = Number(process.env.TABS_PORT ?? 7274)

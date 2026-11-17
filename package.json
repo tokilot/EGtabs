@@ -5,12 +5,15 @@
   "type": "module",
   "workspaces": [
     "web",
-    "server"
+    "server",
+    "desktop"
   ],
   "scripts": {
     "dev": "npm run dev -w server",
     "build": "npm run build -w web",
-    "typecheck": "npm run typecheck -w web && npm run typecheck -w server && tsc -p test",
+    "start": "npm run build && node server/src/serve.ts",
+    "desktop": "npm run build && npm run start -w desktop",
+    "typecheck": "npm run typecheck -w web && npm run typecheck -w server && npm run typecheck -w desktop && tsc -p test",
     "lint": "npm run lint -w web",
     "test": "vitest run",
     "fixtures": "node test/fetch-fixtures.ts",

@@ -6,6 +6,7 @@
 //   npm run e2e -- --shots also write screenshots to test/shots/
 import { spawn, type ChildProcess } from 'node:child_process'
 import { cpSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { createServer } from 'node:http'
 import { cpus, tmpdir } from 'node:os'
 import path from 'node:path'
 import { chromium, type Page } from 'playwright-core'
@@ -14,6 +15,8 @@ import { writeMidi } from '../web/src/tabs/library/midiTestFile.ts'
 
 const root = path.resolve(import.meta.dirname, '..')
 const API_PORT = 5184
+/** A stand-in for an OpenAI-compatible model service, for the assistant. */
+const MODEL_PORT = 5185
 const WEB_PORT = 5183
 const BASE = `http://localhost:${WEB_PORT}`
 const SONG_LINK = 'https://www.songsterr.com/a/wsa/akira-yamaoka-promise-tab-s34008'
@@ -122,12 +125,77 @@ async function cursorPosition(page: Page): Promise<string> {
   })
 }
 
+/**
+ * The assistant's model, scripted: asked a question, it calls two tools (loop bars 1-2, speed 70%); given their
+ * results, it answers in text. Each answer is streamed in pieces, as a real service does. What it was sent is kept.
+ */
+const modelRequests: Array<{ messages: Array<{ role: string; content?: string | null }>; tools?: Array<{ function: { name: string } }> }> = []
+/** The family of tone the scripted model makes for the tone question (the test sets it from the song's first track). */
+let scriptedToneFamily = 'guitar'
+const call = (index: number, id: string, name: string, args: unknown) => ({
+  choices: [{ delta: { tool_calls: [{ index, id, type: 'function', function: { name, arguments: JSON.stringify(args) } }] } }],
+})
+const say = (...pieces: string[]) => pieces.map((content) => ({ choices: [{ delta: { content } }] }))
+const modelService = createServer((request, response) => {
+  let body = ''
+  request.on('data', (chunk) => (body += chunk))
+  request.on('end', () => {
+    const sent = JSON.parse(body) as (typeof modelRequests)[number]
+    modelRequests.push(sent)
+    const answered = sent.messages.at(-1)?.role === 'tool'
+    const question = sent.messages.findLast((message) => message.role === 'user')?.content ?? ''
+    let chunks: unknown[]
+    if (question.includes('你好')) {
+      chunks = say('你好呀！')
+    } else if (question.includes('改谱')) {
+      // A tab edit: a note on the highest string at bar 1, beat 1, then palm muted.
+      chunks = answered
+        ? say('改好了，', '记得保存。')
+        : [call(0, 'e1', 'edit_tab', { track: 1, edits: [{ op: 'note', bar: 1, beat: 1, string: 1, fret: 7 }, { op: 'technique', bar: 1, beat: 1, name: 'palmMute' }] })]
+    } else if (question.includes('音色')) {
+      // A tone question: a new tone with a crunchy amp, given to track 1; then a sentence.
+      chunks = answered
+        ? say('做好了「AI Crunch」，', '给音轨 1 用上了。')
+        : [
+            call(0, 't1', 'create_tone', { name: 'AI Crunch', family: scriptedToneFamily, changes: { amp: { type: 'crunch', knobs: { gain: 65 } } } }),
+            call(1, 't2', 'set_track_tone', { track: 1, tone: 'AI Crunch' }),
+          ]
+    } else {
+      chunks = answered
+        ? say('好的，', '已经循环第 1–2 小节，', '速度 70%。')
+        : [
+            { choices: [{ delta: { tool_calls: [{ index: 0, id: 'a', type: 'function', function: { name: 'set_loop', arguments: '{"from":1,' } }] } }] },
+            { choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: '"to":2}' } }] } }] },
+            call(1, 'b', 'set_speed', { percent: 70 }),
+          ]
+    }
+    // The greeting takes a moment, as a real model does, so the pet can be seen thinking.
+    setTimeout(
+      () => {
+        response.writeHead(200, { 'Content-Type': 'text/event-stream' })
+        for (const chunk of chunks) response.write(`data: ${JSON.stringify(chunk)}\n\n`)
+        response.end('data: [DONE]\n\n')
+      },
+      question.includes('你好') ? 1500 : 0,
+    )
+  })
+})
+
 async function main() {
+  await new Promise<void>((resolve) => modelService.listen(MODEL_PORT, '127.0.0.1', resolve))
+  // The settings, written as a user would in .env.local, in a file of the test's own (the developer's .env.local stays out):
+  // the assistant's model is the scripted service, on this machine, with no key.
+  const envFile = path.join(dataDir, 'test.env')
+  writeFileSync(envFile, `# end-to-end test
+TABS_AI_BASE_URL=http://127.0.0.1:${MODEL_PORT}/v1
+TABS_AI_MODEL=scripted
+`)
   start('node', ['src/index.ts'], path.join(root, 'server'), {
     TABS_PORT: String(API_PORT),
     TABS_DATA_DIR: dataDir,
     TABS_SOUNDFONTS: path.join(root, 'data/soundfonts'),
     TABS_DEMO_SONGS: path.join(dataDir, 'no-demo'),
+    TABS_ENV_FILE: envFile,
   })
   start('npx', ['vite', '--port', String(WEB_PORT), '--strictPort'], path.join(root, 'web'), { TABS_PORT: String(API_PORT) })
   await waitFor(`http://127.0.0.1:${API_PORT}/api/songs`)
@@ -469,61 +537,87 @@ async function main() {
     await page.waitForTimeout(400)
     assert((await cursorPosition(page)) === one, 'ArrowLeft did not go back one bar')
   })
-  await check('the note-name box shows the solfège at the cursor, in the key of the tab or one picked by hand', async () => {
-    const box = page.locator('footer').getByRole('button', { name: '唱名' })
-    const names = async () => (await box.getByRole('status').innerText()).trim()
-    const key = async () => (await box.innerText()).split('\n')[0].trim()
-    // Worked out here from the score itself: movable do from the key signature (or the given tonic), lowest note first.
-    const expected = (bar: number, tonicOverride: number | null = null) =>
-      page.evaluate(
-        ([barIndex, override]) => {
-          const player = (window as unknown as { __tabsPlayer: { getSnapshot(): { trackIndex: number }; api: { score: { tracks: Array<{ staves: Array<{ bars: Array<{ keySignature: number; voices: Array<{ beats: Array<{ notes: Array<{ realValue: number; isDead: boolean }> }> }> }> }> }> } } } }).__tabsPlayer
-          const bar = player.api.score.tracks[player.getSnapshot().trackIndex].staves[0].bars[barIndex!]
-          const syllables = ['do', '#do', 're', '♭mi', 'mi', 'fa', '#fa', 'sol', '#sol', 'la', '♭si', 'si']
-          const tonic = override ?? (((bar.keySignature * 7) % 12) + 12) % 12
-          const pitches = bar.voices[0].beats[0].notes.filter((note) => !note.isDead).map((note) => note.realValue).sort((a, b) => a - b)
-          return pitches.map((pitch) => syllables[(((pitch - tonic) % 12) + 12) % 12]).join(' ')
-        },
-        [bar, tonicOverride] as const,
-      )
+  await check('performing, the pet shows the solfège of what plays, in the key of the tab or one picked by hand', async () => {
+    // The note names went from the control bar to the pet (2026-11-18): shown while it performs and the song plays; the
+    // key is picked in the menu that opens as performing starts.
+    assert((await page.locator('footer').getByRole('button', { name: '唱名' }).count()) === 0, 'the control bar should have no note-name box')
+    await page.getByRole('button', { name: '助手', exact: true }).click()
+    const tools = page.getByRole('toolbar', { name: '助手' })
+    const perform = tools.getByRole('button', { name: '演奏' })
+    const menu = page.getByRole('dialog', { name: '唱名的调' })
+    await perform.click()
+    await menu.waitFor()
+    await shot(page, '03b-key-menu')
+    // The tab's own key for now.
+    await menu.getByRole('button', { name: /^跟随谱子/ }).click()
+    await menu.waitFor({ state: 'hidden' })
+    assert(await tools.getByRole('button', { name: '输入框' }).isDisabled(), 'no chatting while the pet performs')
+    const shown = page.getByRole('status', { name: '当前唱名' })
+    const names = async () => ((await shown.count()) > 0 ? (await shown.innerText()).trim() : '')
+    // Worked out here from the score itself: movable do from the key signature (or the given tonic), lowest note first,
+    // for the beat playing now.
+    const expectedNow = (tonicOverride: number | null = null) =>
+      page.evaluate((override) => {
+        type Beat = { voice: { bar: { keySignature: number } }; notes: Array<{ realValue: number; isDead: boolean }> }
+        const player = (window as unknown as { __tabsPlayer: { getSnapshot(): { trackIndex: number }; api: { tickPosition: number; tickCache: { findBeat(tracks: Set<number>, tick: number): { beat: Beat } | null } } } }).__tabsPlayer
+        const beat = player.api.tickCache.findBeat(new Set([player.getSnapshot().trackIndex]), player.api.tickPosition)?.beat
+        if (!beat) return ''
+        const syllables = ['do', '#do', 're', '♭mi', 'mi', 'fa', '#fa', 'sol', '#sol', 'la', '♭si', 'si']
+        const tonic = override ?? (((beat.voice.bar.keySignature * 7) % 12) + 12) % 12
+        const pitches = beat.notes.filter((note) => !note.isDead).map((note) => note.realValue).sort((a, b) => a - b)
+        return pitches.map((pitch) => syllables[(((pitch - tonic) % 12) + 12) % 12]).join(' ')
+      }, tonicOverride)
+    // Playing: the names follow the beat played (read twice around the box, as the beat may change between).
+    const followsPlayback = async (tonic: number | null = null) => {
+      await page.keyboard.press(' ')
+      let seen = ''
+      try {
+        for (let waited = 0; waited < 8000; waited += 100) {
+          const before = await expectedNow(tonic)
+          seen = await names()
+          const after = await expectedNow(tonic)
+          if (seen && (seen === before || seen === after)) return
+          await page.waitForTimeout(100)
+        }
+      } finally {
+        await page.keyboard.press(' ')
+        await page.waitForFunction(() => !(window as unknown as { __tabsPlayer: { getSnapshot(): { playing: boolean } } }).__tabsPlayer.getSnapshot().playing)
+      }
+      throw new Error(`while playing the pet showed "${seen}" (expected "${await expectedNow(tonic)}")`)
+    }
     // Put the position back afterwards: later checks read the tempo where the cursor is.
     type Tick = { __tabsPlayer: { api: { tickPosition: number } } }
     const startedAt = await page.evaluate(() => (window as unknown as Tick).__tabsPlayer.api.tickPosition)
     await page.keyboard.press('Home')
     await page.waitForTimeout(400)
-    // A rest shows nothing; only the key is written above the names.
-    assert(/^1=[#♭]?[A-G]$/.test(await key()), `the box's key reads "${await key()}"`)
-    assert((await names()) === (await expected(0)), `at the start the box shows "${await names()}" (expected "${await expected(0)}")`)
-    for (let i = 0; i < 4; i++) await page.keyboard.press('ArrowRight')
-    const fifthBar = await expected(4)
-    // The box follows the position as alphaTab reports it, which can take a moment on a busy machine.
-    for (let waited = 0; waited < 3000 && (await names()) !== fifthBar; waited += 200) await page.waitForTimeout(200)
-    const at = await page.evaluate(() => {
-      const player = (window as unknown as { __tabsPlayer: { api: { tickPosition: number; tickCache: { masterBars: Array<{ start: number; end: number }> } } } }).__tabsPlayer
-      const tick = player.api.tickPosition
-      return { tick, bar: player.api.tickCache.masterBars.findIndex((bar) => tick >= bar.start && tick < bar.end) + 1, focus: document.activeElement?.outerHTML.slice(0, 80) }
-    })
-    assert(fifthBar && (await names()) === fifthBar, `in bar 5 the box shows "${await names()}" (expected ${fifthBar}); at ${JSON.stringify(at)}`)
+    // Stopped: nothing.
+    assert((await names()) === '', `stopped, the pet shows "${await names()}"`)
+    await followsPlayback()
+    await shot(page, '03-performing')
 
-    // Picked by hand: G major, so G is do. Kept with the song.
-    await box.click()
-    const menu = page.getByRole('dialog', { name: '唱名的调' })
+    // Picked by hand as performing starts again: G major, so G is do. Kept with the song.
+    await perform.click()
+    await shown.waitFor({ state: 'detached' })
+    await perform.click()
     await menu.waitFor()
-    await shot(page, '03b-key-menu')
     await menu.getByRole('button', { name: '1=G', exact: true }).click()
     await menu.waitFor({ state: 'hidden' })
     await page.waitForTimeout(300)
-    assert((await key()) === '1=G手动' || (await key()).startsWith('1=G'), `the key reads "${await key()}" after picking G`)
-    assert((await names()) === (await expected(4, 7)), `in G the box shows "${await names()}" (expected ${await expected(4, 7)})`)
+    await followsPlayback(7)
     await page.waitForTimeout(1200)
     const saved = (await (await fetch(`http://127.0.0.1:${API_PORT}/api/songs`)).json()) as Array<{ settings: { key?: number | null } }>
     assert(saved[0]?.settings.key === 1, `the picked key was saved as ${JSON.stringify(saved[0]?.settings.key)}`)
     // And back to the tab's own key.
-    await box.click()
+    await perform.click()
+    await perform.click()
     await menu.getByRole('button', { name: /^跟随谱子/ }).click()
-    await page.waitForTimeout(300)
-    assert((await names()) === fifthBar, 'following the tab again did not bring its key back')
+    await menu.waitFor({ state: 'hidden' })
+    await followsPlayback()
 
+    // Done performing (it is kept in the browser otherwise): a second click; the pet's buttons go away again.
+    await perform.click()
+    assert((await perform.getAttribute('aria-pressed')) === 'false', 'a second click on "perform" should stop it')
+    await page.getByRole('button', { name: '助手', exact: true }).click()
     await page.evaluate((tick) => ((window as unknown as Tick).__tabsPlayer.api.tickPosition = tick), startedAt)
     await page.waitForTimeout(300)
   })
@@ -1842,6 +1936,160 @@ async function main() {
     await shot(page, '11-narrow')
   })
 
+  console.log('assistant')
+  await check('the pet takes a question, runs the tools the model calls and shows the answer in its bubble', async () => {
+    const pet = page.getByRole('button', { name: '助手', exact: true })
+    const box = await pet.boundingBox()
+    const footer = await page.locator('footer').boundingBox()
+    assert(box && footer && box.y + box.height <= footer.y && box.x < 100, `the pet should sit above the control bar on the left (${JSON.stringify(box)})`)
+    // The pet shows its two buttons; the input box opens with its own.
+    await pet.click()
+    await page.getByRole('toolbar', { name: '助手' }).getByRole('button', { name: '输入框' }).click()
+    const input = page.getByRole('textbox', { name: '你不要那样看着我的眼睛~' })
+    // The input box under the pet's feet; the bubble above it, as wide as the input box.
+    const layout = await page.evaluate(() => {
+      const rect = (element: Element | null | undefined) => element?.getBoundingClientRect()
+      const pet = rect(document.querySelector('button[aria-label="助手"]'))!
+      const formElement = document.querySelector('textarea[aria-label="你不要那样看着我的眼睛~"]')?.closest('form')
+      const form = rect(formElement)!
+      const bubble = rect(formElement?.parentElement?.querySelector('[role="status"]')?.parentElement)!
+      return { pet: [pet.left, pet.top, pet.right, pet.bottom], form: [form.left, form.top, form.right, form.width], bubble: [bubble.left, bubble.top, bubble.right, bubble.bottom] }
+    })
+    const [, petTop, petRight, petBottom] = layout.pet
+    const [, formTop, formRight, formWidth] = layout.form
+    const [bubbleLeft, bubbleTop, bubbleRight, bubbleBottom] = layout.bubble
+    assert(formTop >= petBottom - 1 && Math.round(formWidth) === 400, `the input box, 400 px wide, under the pet: ${JSON.stringify(layout)}`)
+    assert(bubbleLeft >= petRight && bubbleTop < petTop && bubbleBottom > petTop && bubbleBottom < petBottom, `the bubble at the upper right of the pet's head: ${JSON.stringify(layout)}`)
+    assert(Math.round(bubbleRight) === Math.round(formRight), `the bubble's right edge on the input box's: ${JSON.stringify(layout)}`)
+    await input.fill('把前两小节循环，慢一点')
+    await input.press('Enter')
+    const bubble = page.getByRole('status').filter({ hasText: '把前两小节循环' })
+    await bubble.getByText('好的，已经循环第 1–2 小节，速度 70%。').waitFor()
+    await bubble.getByText('循环第 1–2 小节', { exact: true }).waitFor()
+    await bubble.getByText('速度设为 70%', { exact: true }).waitFor()
+    const practice = await page.evaluate(() => {
+      type Player = { getSnapshot(): { speed: number; looping: boolean }; rangeBars(): { from: number; to: number } | null }
+      const player = (window as unknown as { __tabsPlayer: Player }).__tabsPlayer
+      return { speed: player.getSnapshot().speed, looping: player.getSnapshot().looping, range: player.rangeBars() }
+    })
+    assert(JSON.stringify(practice) === JSON.stringify({ speed: 0.7, looping: true, range: { from: 1, to: 2 } }), `after the tools: ${JSON.stringify(practice)}`)
+    assert(modelRequests.length === 2, `the model should be asked twice (question, tool results), was asked ${modelRequests.length} times`)
+    const [first, second] = modelRequests
+    assert(first.messages[0].role === 'system' && /Open song/.test(first.messages[0].content ?? ''), 'the model should be told about the open song')
+    assert(first.tools?.some((tool) => tool.function.name === 'read_bars') ?? false, 'the model should be given the tools')
+    assert(second.messages.filter((message) => message.role === 'tool').length === 2, 'both tool results should go back to the model')
+    await shot(page, '12-assistant')
+    // Put things back for the checks after this one.
+    await page.getByRole('button', { name: '新对话' }).click()
+    await page.evaluate(() => {
+      const player = (window as unknown as { __tabsPlayer: { setSpeed(speed: number): void; clearRange(): void; setLooping(on: boolean): void } }).__tabsPlayer
+      player.setSpeed(1)
+      player.clearRange()
+      player.setLooping(false)
+    })
+  })
+
+  await check('the pet makes a tone, gives it to a track, and puts both back with one undo', async () => {
+    type Player = { getSnapshot(): { trackTones: Record<string, string>; tracks: Array<{ program: number }> } }
+    const program = await page.evaluate(() => (window as unknown as { __tabsPlayer: Player }).__tabsPlayer.getSnapshot().tracks[0].program)
+    scriptedToneFamily = program >= 32 && program <= 39 ? 'bass' : 'guitar'
+    const tones = async () => ((await (await fetch(`http://127.0.0.1:${API_PORT}/api/tones`)).json()) as { library: { custom: Array<{ id: string; name: string; chain: { amp: { type: string; params: { gain: number } } } }> } | null }).library?.custom ?? []
+    const trackTone = () => page.evaluate(() => (window as unknown as { __tabsPlayer: Player }).__tabsPlayer.getSnapshot().trackTones['0'] ?? null)
+    const before = (await tones()).length
+    const input = page.getByRole('textbox', { name: '你不要那样看着我的眼睛~' })
+    await input.fill('给第一轨做个带点破音的音色')
+    await input.press('Enter')
+    const bubble = page.getByRole('status').filter({ hasText: '带点破音' })
+    await bubble.getByText('做好了「AI Crunch」，给音轨 1 用上了。').waitFor()
+    await bubble.getByText('新建音色「AI Crunch」', { exact: true }).waitFor()
+    await bubble.getByText('音轨 1 用音色「AI Crunch」', { exact: true }).waitFor()
+    const made = (await tones()).find((tone) => tone.name === 'AI Crunch')
+    assert(made && made.chain.amp.type === 'crunch' && made.chain.amp.params.gain === 65, `the tone should be saved with a crunch amp at 65: ${JSON.stringify(made?.chain.amp)}`)
+    assert((await trackTone()) === made.id, 'track 1 should play the new tone')
+    await page.getByRole('button', { name: '撤销这些改动' }).click()
+    await bubble.getByText('已撤销这些改动。').waitFor()
+    assert((await trackTone()) === null, 'after undo, track 1 should play its samples again')
+    const after = await tones()
+    assert(after.length === before && !after.some((tone) => tone.name === 'AI Crunch'), `after undo, the tone should be gone: ${after.map((tone) => tone.name).join(', ')}`)
+    await page.getByRole('button', { name: '新对话' }).click()
+    await page.getByRole('button', { name: '收起' }).last().click()
+    await page.getByRole('status').filter({ hasText: '嘀嘀嘀哒啦啦' }).waitFor({ state: 'detached' })
+  })
+
+  await check('the pet edits the tab in the editor as one step, and its undo takes the step back', async () => {
+    type Player = {
+      barsText(track: number, from: number, to: number): string
+      getSnapshot(): { editing: { canUndo: boolean; dirty: boolean } | null }
+      endEditing(saved: boolean): void
+    }
+    const bar1 = () => page.evaluate(() => (window as unknown as { __tabsPlayer: Player }).__tabsPlayer.barsText(0, 1, 1).split('\n')[1])
+    const editing = () => page.evaluate(() => (window as unknown as { __tabsPlayer: Player }).__tabsPlayer.getSnapshot().editing)
+    const before = await bar1()
+    // What the edits should make of bar 1, worked out from the bar itself: beat 1 gets 1:7, palm muted; the rest stays.
+    const beats = before.slice(before.indexOf(': ') + 2).split(' | ')
+    // The pet's buttons are still out (from the checks before); the input box was closed.
+    await page.getByRole('toolbar', { name: '助手' }).getByRole('button', { name: '输入框' }).click()
+    const input = page.getByRole('textbox', { name: '你不要那样看着我的眼睛~' })
+    await input.fill('帮我改谱：第一小节开头加个 7 品')
+    await input.press('Enter')
+    const bubble = page.getByRole('status').filter({ hasText: '帮我改谱' })
+    await bubble.getByText('改好了，记得保存。').waitFor().catch(async (error) => {
+      throw new Error(`${(error as Error).message.split('\n')[0]}; the bubble said: ${JSON.stringify(await page.getByRole('status').last().innerText())}`)
+    })
+    await bubble.getByText('修改音轨 1 第 1 小节', { exact: true }).waitFor({ timeout: 3000 }).catch(async () => {
+      throw new Error(`the bubble said: ${JSON.stringify(await bubble.innerText())}`)
+    })
+    const after = await bar1()
+    const afterBeats = after.slice(after.indexOf(': ') + 2).split(' | ')
+    assert(afterBeats[0].startsWith(beats[0].split(' ').slice(0, 2).join(' ')) && afterBeats[0].includes(' 1:7(pm)'), `beat 1 after the edits: ${after}`)
+    assert(JSON.stringify(afterBeats.slice(1)) === JSON.stringify(beats.slice(1)), `the other beats should not change: ${after} (before: ${before})`)
+    const open = await editing()
+    assert(open?.dirty && open.canUndo, `the edits should be in the open editor, not saved: ${JSON.stringify(open)}`)
+    await page.getByRole('button', { name: '撤销这些改动' }).click()
+    await bubble.getByText('已撤销这些改动。').waitFor()
+    assert((await bar1()) === before, `after undo, bar 1 should be as it was: ${await bar1()}`)
+    const undone = await editing()
+    assert(undone && !undone.dirty && !undone.canUndo, `both edits should have been one step: ${JSON.stringify(undone)}`)
+    await page.evaluate(() => (window as unknown as { __tabsPlayer: Player }).__tabsPlayer.endEditing(false))
+    await page.getByRole('button', { name: '新对话' }).click()
+    await page.getByRole('button', { name: '收起' }).last().click()
+    await page.getByRole('status').filter({ hasText: '嘀嘀嘀哒啦啦' }).waitFor({ state: 'detached' })
+  })
+
+  await check("the pet's settings edit data/assistant.md, which the model is told with the next question", async () => {
+    const settingsButton = page.getByRole('toolbar', { name: '助手' }).getByRole('button', { name: '设置' })
+    await settingsButton.click()
+    const panel = page.getByRole('dialog', { name: '宠物设置' })
+    const area = panel.getByRole('textbox', { name: '宠物设置' })
+    // Empty on the first start, ready to write in.
+    await page.waitForFunction(() => (document.querySelector('[role="dialog"][aria-label="宠物设置"] textarea') as HTMLTextAreaElement | null)?.disabled === false)
+    const persona = '<!-- 我的设定 -->\n你叫阿毛，说话带点东北口音。'
+    await shot(page, '13-pet-settings')
+    await area.fill(persona)
+    await panel.getByRole('button', { name: '保存' }).click()
+    // Saved: nothing left to save.
+    await page.waitForFunction(() => [...document.querySelectorAll('[role="dialog"][aria-label="宠物设置"] button')].some((button) => button.textContent === '保存' && (button as HTMLButtonElement).disabled))
+    const stored = (await (await fetch(`http://127.0.0.1:${API_PORT}/api/assistant/persona`)).json()) as { text: string }
+    assert(stored.text === persona, `saved as ${JSON.stringify(stored.text)}`)
+    await settingsButton.click()
+    await panel.waitFor({ state: 'detached' })
+    // The next question carries it, without the comment.
+    await page.getByRole('toolbar', { name: '助手' }).getByRole('button', { name: '输入框' }).click()
+    const input = page.getByRole('textbox', { name: '你不要那样看着我的眼睛~' })
+    await input.fill('你好')
+    await input.press('Enter')
+    // While the model thinks, the pet is in its thinking mood (its animations come later, 2026-11-18).
+    await page.locator('[data-mood="thinking"]').waitFor({ timeout: 3000 })
+    await page.getByRole('status').filter({ hasText: '你好呀！' }).waitFor()
+    const system = modelRequests.at(-1)?.messages[0].content ?? ''
+    assert(system.includes('你叫阿毛，说话带点东北口音。') && !system.includes('我的设定'), `the system message ends with ${JSON.stringify(system.slice(-120))}`)
+    await page.getByRole('button', { name: '新对话' }).click()
+    await page.getByRole('toolbar', { name: '助手' }).getByRole('button', { name: '输入框' }).click()
+    // The pet's own button hides its two buttons again.
+    await page.getByRole('button', { name: '助手', exact: true }).click()
+    await page.getByRole('toolbar', { name: '助手' }).getByRole('button', { name: '输入框' }).waitFor({ state: 'detached' })
+  })
+
   await check('the player plays the best sound font the server has (Default.sf2 in resources/soundfonts/)', async () => {
     const fonts = requested.filter((url) => /soundfont/i.test(url) && /\.sf[23]$/i.test(url))
     if (existsSync(path.join(root, 'resources/soundfonts/Default.sf2'))) {
@@ -1867,6 +2115,7 @@ try {
     if (process.platform === 'win32' && child.pid) spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore' })
     else child.kill()
   }
+  modelService.close()
   await new Promise((resolve) => setTimeout(resolve, 800))
   rmSync(dataDir, { recursive: true, force: true, maxRetries: 5 })
 }

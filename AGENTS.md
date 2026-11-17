@@ -1,11 +1,11 @@
 # 项目介绍
 
-为吉他爱好者开发的曲谱练习网站：支持在线看六线谱、练习模式（变速、循环、节拍器、移调），调教效果器音色，同时支持把音频分离出多条单乐器音轨、转成 MIDI 、MIDI转谱。
+为吉他爱好者开发的曲谱练习网站：支持在线看六线谱、练习模式（变速、循环、节拍器、移调），调教效果器音色，同时支持把音频分离出多条单乐器音轨、转成 MIDI 、MIDI转谱；左下角的助手（宠物）接大模型，帮用户看谱、练习、改谱、调音色。
 
 ## 目录
 
 - `web/`：前端（Vite + React + TypeScript，CSS Modules）。
-  - `src/app/`：外壳，拼起顶栏、乐谱区、控制条和三个页面。
+  - `src/app/`：外壳，拼起顶栏、乐谱区、控制条、三个页面和左下角的助手。
   - `src/shared/`：请求封装、地址路由、公共面板样式、`ui/`（Popover、主题、`i18n.ts`）、`alphabetical.ts`（按首字母排序）。
   - `src/audio/`：效果器信号链和引擎（AudioWorklet）、音轨分路、「同一时间只响一种声音」`soundOwner.ts`。
   - `src/tabs/`：曲谱页。`player/`（alphaTab 控制器 `controller.ts`、曲谱编辑、音轨编辑、移调）、`library/`（曲库、
@@ -13,13 +13,29 @@
     `songs/`（在线曲谱 JSON → alphaTab 的转换器）。
   - `src/tones/`：音色页（采样音色库、效果器音色库）。
   - `src/stems/`：转谱页（处理设备、音轨分离、音频转 MIDI）。
+  - `src/assistant/`：左下角（控制条上方）的助手，拖动宠物可以挪到页面别处（`petPlace.ts`，位置记在浏览器里；桌面宠物改为拖动整个窗口）。`Pet.tsx`（形象：名为 Rivus 的 Q 版小姑娘和她的电吉他，原创者 [jyi2ya](https://github.com/jyi2ya)，经授权使用，README 的「许可」里有致谢。画面是 16:9、人物居中留白的帧，
+    显示时裁到人物本身；现在只有一张 `pet/idle.png` 静止显示，动画之后做成同样画幅的透明 webm，`pet/prompts/` 是生成视频的提示词；
+    只播放画好的帧，不另加效果）、`Assistant.tsx`（漫画气泡、输入框；点宠物在它头上出现「设置」「输入框」「演奏」三个图标按钮，各自开关；
+    点「演奏」开始并在按钮上方弹出选调面板，再点结束；演奏时不能聊天，曲子播放时气泡的位置无底色地显示唱名（`tabs/layout/NoteNames.tsx`，由 `app/` 传进来），开关记在浏览器里）、`PetSettings.tsx`（编辑 `data/assistant.md`）、
+    `conversation.ts`（对话循环：模型 → 工具 → 模型，限步数、可停止）、`tools.ts`（工具，在页面里执行）、`prompt.ts`、
+    `stream.ts`（解析流式回答）、`toneText.ts`（音色模块目录、效果链的读写校验）。谱子的文字形式在 `tabs/player/scoreText.ts`。
   - `alphatab-patches.ts`：构建时对 alphaTab 源码做的精确替换。
+- `desktop/`：桌面宠物（Electron 45，主进程 `main.ts` 由 Electron 自带的 Node 直接运行 TypeScript）。透明置顶的小窗加载 `web/desk.html`
+  （`web/src/desk/`：只有助手，复用 `Assistant.tsx`，多一个「练琴」按钮：练琴窗口没开时打开它，开着时就是演奏按钮）；`preload.cjs` 给页面 `window.desk`（点击穿透、拖动挪窗口、
+  打开练琴页、右键菜单、和练琴窗口通信）。练琴页在应用自己的窗口里（`practice.cjs` 给它 `window.deskHost`），页面里不放助手，
+  只放 `assistant/DeskHostLink.tsx`；宠物一直在桌面、置顶，退出应用才消失。对话在宠物的窗口里跑，练琴窗口开着时工具交给它执行
+  （`assistant/toolHost.ts`：系统提示和工具都用练琴窗口的播放器，撤销步骤留在练琴窗口、按编号取；主进程转发 `desk:call` → `host:request` →
+  `host:reply`，播放状态 `host:view` → `desk:view` 供「演奏」显示唱名）。7273 上没有服务时用 Electron 的 Node 启动 `server/src/serve.ts`，
+  退出时关掉。宠物的位置记在 `data/desktop.json`。`launch.ts` 是 `npm run desktop` 的启动脚本。
 - `contracts/`：前后端交换的数据类型，只定义一次（曲目、播放列表、分轨和转换记录、模型、音色库）；后端的模块转出它们，
   网页的 `api.ts` 引用它们。只放类型，用 `import type` 引用，两边的构建里都不留下东西。
 - `server/`：后端（Hono，Node 直接运行 TypeScript）。
   - `src/dev.ts` 是 `npm run dev` 的入口：一个端口（7273）上网页由 Vite 中间件提供（带热更新），`/api` 交给后端；
+    `src/serve.ts` 是 `npm start` 和桌面宠物用的：同一个端口上提供构建好的 `web/dist`（`index.html` 和 `desk.html`）和接口，不经过 Vite；
     `src/index.ts` 只启动后端（7274，端到端测试用它配 Vite 自己的服务器）。
   - `src/app.ts` 装配路由，`src/routes/` 各功能的接口，`src/db/` SQLite（`node:sqlite`）。
+  - `src/assistant.ts`：把对话转发给 OpenAI 兼容的 `/chat/completions`（流式），密钥只在后端；用哪个服务和模型由 `src/env.ts` 读 `.env.local`。
+    `src/persona.ts`：宠物的个性 `data/assistant.md`（第一次启动按模板生成；每次提问都重读，去掉 `<!-- -->` 注释后接在系统提示的内置规则后面）。
   - `src/tasks.ts`：转谱页两个功能共用的任务队列、显卡锁、调用 Python 脚本。`src/stems.ts` 音轨分离，`src/transcribe.ts` 音频转 MIDI。
   - `separator/`：Python 脚本 `separate.py`（audio-separator）、`transcribe.py`（MuScriptor + beat_this），依赖见 `requirements.txt`。
 - `resources/`（随库附带，和个人数据分开）：`soundfonts/Default.sf2`（内置音色库：GeneralUser GS 并入了 Bread 的三个
@@ -28,6 +44,7 @@
 - `data/`（个人数据，整个不进版本库；第一次启动时自动建好它、`user.db` 和要自己往里放东西的
   `soundfonts/`、`models/separator/`、`models/transcriber/`）：
   - `user.db`：曲子、练习设置、播放列表、音色库，以及**收藏曲子**的谱子内容（上传的文件、在线曲谱的修订版、编辑版）。
+  - `assistant.md`：宠物的个性和用户想让它知道的事（宠物的「设置」面板编辑它，也可以直接改文件）。
   - `songs/`：按 1、2、3… 编号的文件夹（`server/src/songs/songFolders.ts`），每个里有 `origin.json` 说明是什么：
     在线曲谱的一个修订版（`meta.json` + `{音轨}.json`）或上传的文件。**没收藏的曲子**的谱子只在这里；收藏时搬进
     `user.db`、取消收藏时搬回来（`db/library.ts`）。启动时没收藏的曲子和「最近打开」都保留，
@@ -45,7 +62,9 @@
 ```bash
 npm ci
 npm run dev          # 网页和接口都在 7273（server/src/dev.ts）；改后端文件自动重启，改网页文件走 Vite 热更新
-npm run build
+npm run build        # 构建 web/dist（index.html 和桌面宠物的 desk.html）
+npm start            # 构建后由 server/src/serve.ts 在 7273 上提供构建好的网页和接口
+npm run desktop      # 构建后启动桌面宠物（desktop/）
 npm test             # vitest 单元测试（测试曲目缺失时相关测试跳过）
 npm run typecheck
 npm run lint         # oxlint
@@ -54,17 +73,25 @@ npm run e2e:songs    # 渲染 10 首测试曲目的全部音轨
 npm run fixtures     # 把测试曲目下载到 test/songs/
 ```
 
-后端环境变量：`TABS_DEV_PORT`（`npm run dev` 的端口）、`TABS_PORT`（只启动后端时的端口）、`TABS_DATA_DIR`、`TABS_PYTHON`、`TABS_SEPARATOR_MODELS`、`TABS_TRANSCRIBER_MODELS`、`TABS_SOUNDFONTS`、`TABS_DEMO_SONGS`（随库附带的谱的目录；e2e 指向空目录，免得新曲库里多出它）。
+后端的设置：仓库根目录的 `.env.local`（不进版本库，`.env.example` 列出全部并有注释；`src/env.ts` 启动时读进 `process.env`，
+系统环境里已有的优先；`TABS_ENV_FILE` 可指向别的文件，e2e 用它指向自己写的一份，开发者的 `.env.local` 不会混进测试）。变量：`TABS_DEV_PORT`（`npm run dev` 的端口）、`TABS_APP_PORT`（`npm start` 和桌面宠物的端口）、`TABS_PORT`（只启动后端时的端口）、`TABS_DATA_DIR`、`TABS_PYTHON`、`TABS_SEPARATOR_MODELS`、`TABS_TRANSCRIBER_MODELS`、`TABS_SOUNDFONTS`、`TABS_DEMO_SONGS`（随库附带的谱的目录；e2e 指向空目录，免得新曲库里多出它）。
+`TABS_AI_BASE_URL` / `TABS_AI_MODEL` / `TABS_AI_API_KEY` / `TABS_AI_STREAM`（助手的模型，每次请求都重读 `.env.local`，改了不用重启；e2e 指向脚本写好的假服务）。
+连接模型服务失败（还没收到回答就被重置等）时后端重试 6 次；`TABS_AI_STREAM=false` 时向服务要整段回答，再以一段流的格式交给网页（用户的中转服务流式输出会丢开头，2026-11-18）。
+加新设置时同步 `.env.example` 和两份 README 的表格。
 
 ## 代码约定
 
 - 和用户用中文交流；代码、标识符、提交信息用英文，注释跟随周围代码。
 - 修改了界面文字要同步英文对照表和 `docs/note.md`（见下）。
 - 乐谱区用配置 alphaTab 实现，求内容、结构、行为一致，不求逐像素。配置和 CSS 解决不了的差异先告诉用户，不要重写渲染层。
-- AI 只用本机跑的模型（音轨分离、音频转 MIDI）。模型权重不进仓库，放 `data/models/`。
+- 音轨分离、音频转 MIDI 的模型在本机跑，权重不进仓库，放 `data/models/`。
+- 助手的模型走 OpenAI 兼容接口（在线服务或本机的 Ollama 等都行），在 `.env.local` 里配置；密钥只在后端，不进网页和数据库。
+  工具在页面里执行（谱子在浏览器内存里），只走 `usePlayer()` 的控制器方法；参数由工具自己校验，出错把原因文字交回模型，不抛给页面。
+  改谱经 `controller.assistantEdit()` 走曲谱编辑器（`tabs/player/tabEdits.ts` 把操作翻成编辑器命令，`TabEditor.group()` 合成一步撤销），
+  不直接存盘，由用户在编辑器里保存。改了用户保存的东西（音色、音轨用哪个音色、曲谱）的工具要给出撤销步骤：气泡里「撤销这些改动」一次撤回整个回答的改动，下次提问时告诉模型。
 - alphaTab 的播放器 API 只在 `tabs/player/controller.ts` 里调用；其他组件用 `usePlayer()` 拿快照和方法。播放状态以 alphaTab 的事件为准，React 里不另存一份播放位置。
 - 当前打开哪首曲子以地址栏 `#/song/{id}` 为准；音色页（`#/tones`）和转谱页（`#/stems`）盖在乐谱区上，不关闭曲子。
-- 依赖边界：`audio/`、`shared/` 不引用任何功能模块；转谱页（`stems/`）不引用曲谱和音色；曲谱只通过 `tones/library.ts` 的查找函数和 `useTones()` 用音色；互相打断播放只走 `soundOwner`。
+- 依赖边界：`audio/`、`shared/` 不引用任何功能模块；转谱页（`stems/`）不引用曲谱和音色；助手（`assistant/`）只通过控制器用曲谱（另外只引用 `tabEdits.ts` 的说明常量）、通过 `toneStore` 和 `tones/library.ts` 用音色，没有页面引用它（只有 `app/` 把它放上去）；曲谱只通过 `tones/library.ts` 的查找函数和 `useTones()` 用音色；互相打断播放只走 `soundOwner`。
 - 界面文字都经过 `t()`（组件外用 `translate()`），中文原文作键；新中文要在 `shared/ui/i18n.ts` 的 EN 表里加英文，`i18n.test.ts` 会检查。不是界面文字的中文（比如排序用的汉字）写成转义。
 - 界面上的说明、提示文字登记在 `docs/note.md`（编号、场景、文字、文件:行号、「修改」列）。增删改这类文字时同步更新；用户在「修改」列填了新文字（「无文本」表示删掉）后，按编号改代码、英文对照表 `docs/note.md`。
 - 样式用 CSS Modules + CSS 变量，不引入 UI 组件库。TypeScript 开着 `erasableSyntaxOnly`：不用构造函数参数属性和 enum。
@@ -94,6 +121,13 @@ npm run fixtures     # 把测试曲目下载到 test/songs/
 - 也不要换回 `node --watch-path`：它在一次启动失败后只等下一次改动，而 Windows 上刚重启时旧进程可能还占着端口或文件，
   偶尔失败一下后端就一直停着（2026-11-12）。`devWatch.ts` 启动失败会隔 1.5 秒重试 3 次，还失败（代码真有错）才等改动。
 - 端口被占用时 `dev.ts` 会说明原因并退出；真有另一个 `npm run dev` 在跑时，`devWatch.ts` 重试 3 次后停下等改动。
+
+## 桌面宠物（Electron）
+
+- 从 VS Code 的终端启动时环境里带着 `ELECTRON_RUN_AS_NODE=1`，Electron 会变成普通 Node（`import electron` 得到空对象）：
+  `desktop/launch.ts` 去掉它再启动；主进程启动后端时反过来设上它，用 Electron 自带的 Node 跑 `serve.ts`。
+- `electron` 是 CommonJS：主进程里 `import electron from 'electron'` 再解构，不能直接具名导入。预加载脚本只能是 CommonJS 的 JS（`preload.cjs`）。
+- 安装依赖后 Electron 的程序文件由它的 `install.js` 下载，下载失败时 `node node_modules/electron/install.js` 重试。
 
 ## Python（转谱页，可选）
 
