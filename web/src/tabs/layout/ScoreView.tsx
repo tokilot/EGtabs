@@ -5,6 +5,7 @@ import { useSong } from '../library/useSong.ts'
 import { usePlayer } from '../player/usePlayer.ts'
 import { useLanguage } from '../../shared/ui/i18n.ts'
 import { EditPanel } from './EditPanel.tsx'
+import { ScoreHeaderField } from './ScoreHeaderField.tsx'
 import styles from './ScoreView.module.css'
 import { TrackSwitchMenu, type TrackSwitchMenuPlace } from './TrackSwitchMenu.tsx'
 
@@ -50,10 +51,16 @@ export function ScoreView() {
         <div
           ref={stage}
           className={styles.stage}
-          // While editing, a click on the score puts the edit cursor there (alphaTab still moves its own cursor).
-          onPointerDown={editing ? (event) => player.editClickAt(event.clientX, event.clientY) : undefined}
+          // While editing, a click on the score puts the edit cursor there (alphaTab still moves its own cursor);
+          // with shift it selects from the cursor to there.
+          // Held down and moved, it selects from the beat the press started on to the one under the pointer.
+          onPointerDown={editing ? (event) => player.editClickAt(event.clientX, event.clientY, event.shiftKey) : undefined}
           onPointerMove={
-            switching
+            editing
+              ? (event) => {
+                  if (event.buttons & 1) player.editDragTo(event.clientX, event.clientY)
+                }
+              : switching
               ? (event) => {
                   const bar = player.barAt(event.clientX, event.clientY)
                   // Over the button itself it stays; while the menu is open it stays on the menu's bar.
@@ -65,6 +72,16 @@ export function ScoreView() {
         >
           {/* alphaTab owns this element; it stays mounted so the player survives switching songs. */}
           <div ref={host} />
+          {/* The title and artist drawn on the score, edited in place while the tab is edited. */}
+          {editing?.titleBox && (
+            <ScoreHeaderField box={editing.titleBox} value={editing.songTitle} label={t('曲名')} bold onCommit={(title) => player.setSongInfo({ title })} />
+          )}
+          {editing?.artistBox && (
+            <ScoreHeaderField box={editing.artistBox} value={editing.songArtist} label={t('作者')} onCommit={(artist) => player.setSongInfo({ artist })} />
+          )}
+          {editing?.selectionBoxes.map((box, index) => (
+            <div key={index} className={styles.editSelection} style={{ left: box.x, top: box.y, width: box.w, height: box.h }} aria-hidden />
+          ))}
           {editing?.beatBox && (
             <div
               className={styles.editBeat}

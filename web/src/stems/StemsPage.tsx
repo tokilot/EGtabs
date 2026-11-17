@@ -78,10 +78,10 @@ export function StemsPage() {
               <p className={panel.hint}>
                 {[t('内存 {n} GB', { n: devices.memoryGb }), devices.torch && `PyTorch ${devices.torch}`, devices.cuda && `CUDA ${devices.cuda}`].filter(Boolean).join(' · ')}
               </p>
-              {devices.problem && <p className={styles.error}>{t('处理设备不可用：{error}', { error: devices.problem })}</p>}
+              {devices.problem && <p className={styles.error}>{t('设备不可用：{error}', { error: devices.problem })}</p>}
             </>
           ) : (
-            <p className={panel.hint}>{t('正在检测当前可用设备…')}</p>
+            <p className={panel.hint}>{t('正在检测可用设备…')}</p>
           )}
           {error && <p className={styles.error}>{error}</p>}
         </section>

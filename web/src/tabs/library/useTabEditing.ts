@@ -27,7 +27,11 @@ export function useTabEditing() {
     if (!bytes) return
     setBusy(true)
     try {
-      replace(await api.saveEditedSong(song.id, bytes))
+      let saved = await api.saveEditedSong(song.id, bytes)
+      // A title or artist changed in the editor goes to the library too, so the list shows it.
+      const info = player.editedSongInfo()
+      if (info) saved = await api.updateSong(song.id, info)
+      replace(saved)
       player.endEditing(true)
       libraryChanged()
     } catch (cause) {
@@ -39,13 +43,13 @@ export function useTabEditing() {
 
   /** Closes the editor and throws away what was changed since it was opened. */
   const discard = useCallback(() => {
-    if (player.editDirty && !window.confirm(translate('确认放弃修改吗？'))) return
+    if (player.editDirty && !window.confirm(translate('是否放弃修改？'))) return
     player.endEditing(false)
   }, [player])
 
   /** Deletes the saved edits and opens the tab as it was imported. */
   const restoreOriginal = useCallback(async () => {
-    if (!song?.edited || !window.confirm(translate('确认放弃所有修改，恢复成导入时的曲谱吗？'))) return
+    if (!song?.edited || !window.confirm(translate('是否放弃所有修改，恢复成导入时的曲谱？'))) return
     setBusy(true)
     try {
       player.endEditing(false)

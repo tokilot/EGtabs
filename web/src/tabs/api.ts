@@ -62,7 +62,7 @@ export function deleteSong(id: number): Promise<{ ok: boolean }> {
   return request(`/api/songs/${id}`, { method: 'DELETE' })
 }
 
-/** A playlist of favourite songs, in playing order (contracts/library.ts). */
+/** A playlist of songs of the library, in playing order (contracts/library.ts). */
 export type { Playlist }
 
 export function listPlaylists(): Promise<Playlist[]> {

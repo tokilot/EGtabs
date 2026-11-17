@@ -99,7 +99,7 @@ export function midiTabFile(bytes: Uint8Array, title: string): Uint8Array {
 
 export function midiToScore(bytes: Uint8Array, title: string): Score {
   const file = readMidiFile(bytes)
-  if (file.parts.length === 0) throw new Error(translate('这个 MIDI 文件里没有音符。'))
+  if (file.parts.length === 0) throw new Error(translate('MIDI 文件里没有音符。'))
   const scale = QUARTER / file.ticksPerQuarter
   const toTicks = (tick: number) => Math.round(tick * scale)
   const end = Math.max(...file.parts.flatMap((part) => part.notes.map((note) => toTicks(note.end))))
@@ -184,7 +184,7 @@ function layBars(file: MidiFile, toTicks: (tick: number) => number, end: number)
     }
     const beat = WHOLE / denominator
     bars.push({ start: tick, length: numerator * beat, numerator, denominator, beat })
-    if (bars.length > MAX_BARS) throw new Error(translate('这个 MIDI 文件太长了。'))
+    if (bars.length > MAX_BARS) throw new Error(translate('MIDI 文件过长。'))
     tick += numerator * beat
   }
   return bars

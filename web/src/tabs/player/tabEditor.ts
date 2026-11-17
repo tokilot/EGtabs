@@ -133,6 +133,18 @@ export interface EditorState {
   canRedo: boolean
   /** Edits since the last save. */
   dirty: boolean
+  /** The beats selected (shift + arrows or click) from one to the other, in order; null when only the cursor beat. */
+  selection: { from: { bar: number; beat: number }; to: { bar: number; beat: number }; beats: number } | null
+  /** The song's title and artist, as written in the tab. */
+  songTitle: string
+  songArtist: string
+}
+
+/** Beats copied from a track (2026-11-16), to be pasted into it or another one. */
+export interface BeatClipboard {
+  beats: model.Beat[]
+  /** The source track's string count: strings are kept by their number from the highest. */
+  strings: number
 }
 
 interface Operation {
@@ -258,6 +270,9 @@ export class TabEditor {
       canUndo: this.undoStack.length > 0,
       canRedo: this.redoStack.length > 0,
       dirty: this.changes !== this.savedAt,
+      selection: this.selectionRange(),
+      songTitle: this.score.title,
+      songArtist: this.score.artist,
     }
   }
 
@@ -276,15 +291,165 @@ export class TabEditor {
 
   // ---- cursor ----
 
-  moveTo(cursor: Partial<EditCursor>) {
+  /** Moves the cursor; the selection is dropped unless `extend` (shift), which selects from where it was to here. */
+  moveTo(cursor: Partial<EditCursor>, extend = false) {
+    if (extend) this.anchor ??= { bar: this.cursor.bar, beat: this.cursor.beat }
+    else this.anchor = null
     const bar = clampInt(cursor.bar ?? this.cursor.bar, 0, this.staff.bars.length - 1)
     const beat = clampInt(cursor.beat ?? (bar === this.cursor.bar ? this.cursor.beat : 0), 0, this.voice(bar).beats.length - 1)
     this.cursor = { bar, beat, string: clampInt(cursor.string ?? this.cursor.string, 1, this.stringCount) }
     this.lastDigit = null
+    if (this.anchor && this.anchor.bar === bar && this.anchor.beat === beat) this.anchor = null
   }
 
-  /** One beat left or right, into the neighbouring bar at the ends. */
-  stepBeat(delta: number) {
+  // ---- selection, copy and paste (2026-11-16) ----
+
+  /** Where a shift-selection started; the cursor is its other end. */
+  private anchor: { bar: number; beat: number } | null = null
+
+  private selectionRange(): EditorState['selection'] {
+    if (!this.anchor) return null
+    const a = this.anchor
+    const b = { bar: this.cursor.bar, beat: this.cursor.beat }
+    const [from, to] = a.bar < b.bar || (a.bar === b.bar && a.beat <= b.beat) ? [a, b] : [b, a]
+    return { from, to, beats: this.beatsBetween(from, to).length }
+  }
+
+  private beatsBetween(from: { bar: number; beat: number }, to: { bar: number; beat: number }): model.Beat[] {
+    const beats: model.Beat[] = []
+    for (let bar = from.bar; bar <= to.bar; bar++) {
+      const all = this.voice(bar).beats
+      beats.push(...all.slice(bar === from.bar ? from.beat : 0, bar === to.bar ? to.beat + 1 : all.length))
+    }
+    return beats
+  }
+
+  /** The beats selected, or the cursor beat, in order. */
+  selectedBeats(): model.Beat[] {
+    const range = this.selectionRange()
+    return range ? this.beatsBetween(range.from, range.to) : [this.beat]
+  }
+
+  /** Copies of the selected beats (or the cursor beat); chords are kept by name, as they belong to their staff. */
+  copy(): BeatClipboard {
+    return {
+      beats: this.selectedBeats().map((beat) => {
+        const copy = cloneBeat(beat)
+        copy.chordId = beat.chordId ? (this.staff.getChord(beat.chordId)?.name ?? beat.chordId) : null
+        return copy
+      }),
+      strings: this.stringCount,
+    }
+  }
+
+  /**
+   * Pastes copied beats at the cursor, over as much of the tab as they last: the beats there are replaced, across
+   * bar lines, and what a bar has left after the pasted beats becomes rests. A beat too long for what is left of a
+   * bar goes to the next bar. Notes keep their string number counted from the highest string (string 1 stays string
+   * 1, frets as they are), and notes on strings this track does not have are left out. One step of the history.
+   * Returns how many notes were left out and how many beats did not fit before the end of the track.
+   */
+  paste(clipboard: BeatClipboard): { droppedNotes: number; cutBeats: number } {
+    const result = { droppedNotes: 0, cutBeats: 0 }
+    if (!this.editable || clipboard.beats.length === 0) return result
+    const strings = this.stringCount
+    this.change('track', () => {
+      const bars = this.staff.bars
+      let bar = this.cursor.bar
+      let at = this.cursor.beat
+      // Time taken out of the current bar and not yet given to a pasted beat.
+      let room = 0
+      const touched = new Set<number>([bar])
+      const putRests = () => {
+        if (room > 8) {
+          const voice = bars[bar].voices[0]
+          for (const rest of restsFor(room)) {
+            rest.voice = voice
+            voice.beats.splice(at++, 0, rest)
+          }
+        }
+        room = 0
+      }
+      let index = 0
+      for (; index < clipboard.beats.length; index++) {
+        const source = clipboard.beats[index]
+        const length = beatTicks(source)
+        let placed = false
+        for (;;) {
+          const voice = bars[bar].voices[0]
+          while (room < length - 8 && at < voice.beats.length) room += beatTicks(voice.beats.splice(at, 1)[0])
+          if (room >= length - 8 || length === 0) {
+            placed = true
+            break
+          }
+          // Nothing more to take out of this bar: what is left of it becomes rests, and on to the next bar.
+          putRests()
+          if (bar + 1 >= bars.length) break
+          bar++
+          at = 0
+          touched.add(bar)
+        }
+        if (!placed) break
+        const voice = bars[bar].voices[0]
+        const beat = cloneBeat(source)
+        for (const note of [...beat.notes]) {
+          const target = strings - (clipboard.strings - note.string)
+          if (target < 1 || target > strings) {
+            beat.removeNote(note)
+            result.droppedNotes++
+          } else {
+            note.string = target
+          }
+        }
+        if (source.chordId) {
+          if (!this.staff.hasChord(source.chordId)) {
+            const chord = new model.Chord()
+            chord.name = source.chordId
+            chord.showDiagram = false
+            chord.showFingering = false
+            this.staff.addChord(source.chordId, chord)
+          }
+          beat.chordId = source.chordId
+        }
+        beat.isEmpty = false
+        beat.voice = voice
+        voice.beats.splice(at++, 0, beat)
+        room = Math.max(0, room - length)
+      }
+      result.cutBeats = clipboard.beats.length - index
+      putRests()
+      // A bar always keeps a beat.
+      for (const number of touched) {
+        const voice = bars[number].voices[0]
+        if (voice.beats.length > 0) continue
+        for (const rest of restsFor(this.score.masterBars[number].calculateDuration(false))) {
+          rest.voice = voice
+          voice.beats.push(rest)
+        }
+      }
+    })
+    this.moveTo({})
+    return result
+  }
+
+  /** The song's title and artist, as the tab (and, once saved, the library) shows them; one step of the history. */
+  setSongInfo(changes: { title?: string; artist?: string }) {
+    const before = { title: this.score.title, artist: this.score.artist }
+    const after = { title: changes.title?.trim() || before.title, artist: changes.artist === undefined ? before.artist : changes.artist.trim() }
+    if (after.title === before.title && after.artist === before.artist) return
+    const put = (value: typeof before) => {
+      this.score.title = value.title
+      this.score.artist = value.artist
+    }
+    put(after)
+    this.undoStack.push({ undo: () => put(before), redo: () => put(after) })
+    this.redoStack.length = 0
+    this.changes++
+    this.edits++
+  }
+
+  /** One beat left or right, into the neighbouring bar at the ends; with `extend` the selection grows (shift). */
+  stepBeat(delta: number, extend = false) {
     let { bar, beat } = this.cursor
     beat += delta
     while (beat < 0 && bar > 0) {
@@ -295,7 +460,7 @@ export class TabEditor {
       beat -= this.voice(bar).beats.length
       bar++
     }
-    this.moveTo({ bar, beat })
+    this.moveTo({ bar, beat }, extend)
   }
 
   stepBar(delta: number) {
@@ -960,7 +1125,17 @@ export class TabEditor {
 }
 
 /** The fewest plain rests that add up to `ticks`, longest first. */
-function restsFor(ticks: number): model.Beat[] {
+/** How long a beat lasts in ticks (a whole note is 3840); grace notes take no time of the bar. */
+function beatTicks(beat: model.Beat): number {
+  if (beat.graceType !== model.GraceType.None) return 0
+  let ticks = TICKS_PER_WHOLE / beat.duration
+  ticks *= 2 - 1 / 2 ** beat.dots
+  if (beat.hasTuplet) ticks = (ticks * beat.tupletDenominator) / beat.tupletNumerator
+  return ticks
+}
+
+/** Rests that fill `ticks` (a whole note is 3840), longest first. */
+export function restsFor(ticks: number): model.Beat[] {
   const rests: model.Beat[] = []
   let left = ticks
   for (const duration of DURATIONS) {

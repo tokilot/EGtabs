@@ -1,5 +1,5 @@
 import { model } from '@coderline/alphatab'
-import { ArrowDown, ArrowUp, Plus, Redo2, RotateCcw, Trash2, Undo2, X } from 'lucide-react'
+import { ArrowDown, ArrowUp, ClipboardPaste, Copy, Plus, Redo2, RotateCcw, Trash2, Undo2, X } from 'lucide-react'
 import { useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import { useSong } from '../library/useSong.ts'
 import { useTabEditing } from '../library/useTabEditing.ts'
@@ -9,6 +9,7 @@ import { DURATIONS, MAX_FRET, TREMOLO_MARKS, TUPLETS, type BeatFlag, type BendKi
 import { usePlayer } from '../player/usePlayer.ts'
 import { useLanguage, type Translate } from '../../shared/ui/i18n.ts'
 import styles from './EditPanel.module.css'
+import { pasteBeats } from './shortcuts.ts'
 
 type Tab = 'note' | 'rhythm' | 'effects' | 'dynamics' | 'bar' | 'text'
 
@@ -283,7 +284,9 @@ function NoteTab({ run, t }: TabProps) {
 }
 
 function RhythmTab({ run, t }: TabProps) {
-  const beat = usePlayer().state.editing!.beat
+  const { state, player } = usePlayer()
+  const edit = state.editing!
+  const beat = edit.beat
   return (
     <>
       <Choice
@@ -328,6 +331,15 @@ function RhythmTab({ run, t }: TabProps) {
         </Button>
         <Button label={t('设为休止')} shortcut="R" disabled={beat.isRest} onClick={() => run((editor) => editor.clearBeat())}>
           {t('休止')}
+        </Button>
+      </Row>
+      {/* Shift + arrows or shift + click select beats; copied beats paste into any track. */}
+      <Row label={t('复制')}>
+        <Button label={edit.selection ? t('复制选中的 {n} 拍', { n: edit.selection.beats }) : t('复制这一拍')} shortcut="Ctrl+C" onClick={() => player.copyBeats()}>
+          <Copy size={14} /> {edit.selection ? t('复制 {n} 拍', { n: edit.selection.beats }) : t('复制')}
+        </Button>
+        <Button label={t('粘贴到这里')} shortcut="Ctrl+V" disabled={edit.clipboard === 0 || !edit.editable} onClick={() => pasteBeats(player)}>
+          <ClipboardPaste size={14} /> {edit.clipboard > 0 ? t('粘贴 {n} 拍', { n: edit.clipboard }) : t('粘贴')}
         </Button>
       </Row>
     </>

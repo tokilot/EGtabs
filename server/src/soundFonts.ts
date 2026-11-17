@@ -22,8 +22,11 @@ export const ADDED_BANK = 1000
 
 /** The banks the extra sets are moved to, one each from here: clear of every bank a General MIDI set uses. */
 export const EXTRA_BANK = 1024
-/** Where an extra set's other banks (variations, drum kits) are put out of the way: no track asks for it. */
+/** Where an extra set's other banks (variations) are put out of the way: no track asks for it. */
 const UNUSED_BANK = 2047
+
+/** General MIDI's bank of drum kits. */
+export const DRUM_BANK = 128
 
 interface Chunk {
   offset: number
@@ -73,9 +76,28 @@ const ONE_SIDE = /[ _][LR]$/
 /** What kind of set a file is, and its presets. A file that cannot be read is listed as General MIDI, as it was. */
 function describe(parsed: Parsed | null, name: string): Pick<SoundFont, 'kind' | 'presets'> {
   if (!parsed) return { kind: 'gm', presets: [] }
-  const presets = parsed.presets.filter((preset) => preset.bank === 0 && !ONE_SIDE.test(preset.name)).map(({ program, name }) => ({ program, name }))
   const programs = new Set(parsed.presets.filter((preset) => preset.bank === 0).map((preset) => preset.program))
-  return { kind: PREFERRED.includes(name) || programs.size >= GM_PROGRAMS ? 'gm' : 'extra', presets }
+  const kind = PREFERRED.includes(name) || programs.size >= GM_PROGRAMS ? 'gm' : 'extra'
+  const presets = parsed.presets
+    .filter((preset) => preset.bank === 0 && !ONE_SIDE.test(preset.name) && !(kind === 'extra' && looksLikeKit(preset, name)))
+    .map(({ program, name }) => ({ program, name }))
+  return { kind, presets }
+}
+
+/**
+ * The drum kits of a set: those in the drum bank, and (for a set other than the main one) presets of bank 0 that
+ * call themselves a kit: small drum sets often keep their one kit there ("MetalDrums.sf2": "Drumkit"). A General
+ * MIDI set's bank 0 is its melodic instruments, steel drums and all.
+ */
+function drumKits(parsed: Parsed | null, name: string, main: boolean): Array<SoundFontPreset & { bank: number }> {
+  const all = parsed?.presets ?? []
+  const kits = all.filter((preset) => preset.bank === DRUM_BANK || (!main && preset.bank === 0 && looksLikeKit(preset, name)))
+  return kits.sort((a, b) => b.bank - a.bank || a.program - b.program)
+}
+
+function looksLikeKit(preset: SoundFontPreset, file: string): boolean {
+  if (/steel\s*drum/i.test(preset.name)) return false
+  return /drum|kit|perc/i.test(preset.name) || (/drum|perc/i.test(file) && !/steel\s*drum/i.test(file))
 }
 
 /**
@@ -84,10 +106,18 @@ function describe(parsed: Parsed | null, name: string): Pick<SoundFont, 'kind' |
  * alphaTab's synthesizer skips stereo samples (left, right, linked); as mono, both sides of a pair play, each at
  * its zone's pan.
  */
-export function prepareExtra(bytes: Buffer, parsed: Parsed, bank: number): Buffer {
+export function prepareExtra(bytes: Buffer, parsed: Parsed, bank: number, drums: Map<string, number> = new Map()): Buffer {
   const out = Buffer.from(bytes)
   for (let at = parsed.phdr.offset; at + 2 * PHDR_SIZE <= parsed.phdr.offset + parsed.phdr.size; at += PHDR_SIZE) {
-    out.writeUInt16LE(out.readUInt16LE(at + 22) === 0 ? bank : UNUSED_BANK, at + 22)
+    const presetBank = out.readUInt16LE(at + 22)
+    const kit = drums.get(`${presetBank}:${out.readUInt16LE(at + 20)}`)
+    // Its drum kits go to the drum bank, on the programs given to them (see SoundFonts.list); the rest as before.
+    if (kit !== undefined) {
+      out.writeUInt16LE(kit, at + 20)
+      out.writeUInt16LE(DRUM_BANK, at + 22)
+    } else {
+      out.writeUInt16LE(presetBank === 0 ? bank : UNUSED_BANK, at + 22)
+    }
   }
   for (let at = parsed.shdr.offset; at + 2 * SHDR_SIZE <= parsed.shdr.offset + parsed.shdr.size; at += SHDR_SIZE) {
     const type = out.readUInt16LE(at + 44)
@@ -142,8 +172,34 @@ export class SoundFonts {
         if (added.length > 0) font.added = { bank: ADDED_BANK, presets: added.map(({ program, name }) => ({ program, name })) }
       } else font.bank = EXTRA_BANK + extras++
     }
+    // Drum kits: the main set's on their own programs; each other set's on the next programs no kit uses yet.
+    this.kitPrograms.clear()
+    const taken = new Set<number>()
+    for (const font of [...fonts.filter((font) => font.main), ...fonts.filter((font) => !font.main)]) {
+      const moved = new Map<string, number>()
+      const listed: SoundFontPreset[] = []
+      let next = 0
+      for (const kit of drumKits(this.read(font.name), font.name, font.main)) {
+        let program = kit.program
+        if (font.main) {
+          if (taken.has(program)) continue
+        } else {
+          while (next < 128 && taken.has(next)) next++
+          if (next >= 128) break
+          program = next
+        }
+        taken.add(program)
+        moved.set(`${kit.bank}:${kit.program}`, program)
+        listed.push({ program, name: kit.name })
+      }
+      if (listed.length > 0) font.drums = listed
+      this.kitPrograms.set(font.name, moved)
+    }
     return fonts
   }
+
+  // Per set: its drum kits, "bank:program" in the file -> program played from the drum bank (as list() last gave).
+  private readonly kitPrograms = new Map<string, Map<string, number>>()
 
   /** The file of one of them, or null (only names from the list: nothing outside the folders). */
   file(name: string): string | null {
@@ -157,7 +213,7 @@ export class SoundFonts {
     const bytes = readFileSync(this.file(name)!)
     const parsed = font.main ? null : this.read(name)
     if (!parsed || font.bank === undefined) return { bytes, bank: null }
-    return { bytes: prepareExtra(bytes, parsed, font.bank), bank: font.bank }
+    return { bytes: prepareExtra(bytes, parsed, font.bank, this.kitPrograms.get(name)), bank: font.bank }
   }
 
   // Headers read once per version of the file.

@@ -4,6 +4,7 @@ import type { PlayerController } from '../player/controller.ts'
 import { model } from '@coderline/alphatab'
 import type { TabEditor } from '../player/tabEditor.ts'
 import { usePlayer } from '../player/usePlayer.ts'
+import { translate } from '../../shared/ui/i18n.ts'
 
 /** Shown in the help panel; keep in step with the handler below. */
 export const SHORTCUTS = [
@@ -43,6 +44,19 @@ const LETTER_KEYS: Record<string, (editor: TabEditor) => void> = {
   a: (editor) => editor.setAccent(editor.state().note?.accent ? model.AccentuationType.None : model.AccentuationType.Normal),
 }
 
+/**
+ * Pastes the copied beats at the edit cursor (Ctrl+V, or the edit panel's button), and says so when some notes had
+ * no string in this track or some beats ran past its end.
+ */
+export function pasteBeats(player: PlayerController) {
+  const result = player.pasteBeats()
+  if (!result || (result.droppedNotes === 0 && result.cutBeats === 0)) return
+  const parts: string[] = []
+  if (result.droppedNotes > 0) parts.push(translate('音轨上没有 {n} 个音所在的弦。', { n: result.droppedNotes }))
+  if (result.cutBeats > 0) parts.push(translate('音轨有限，有 {n} 拍没有粘贴。', { n: result.cutBeats }))
+  window.alert(parts.join('\n'))
+}
+
 /** While the tab editor is open the keyboard edits the tab. Returns whether the key was used. */
 function editKey(event: KeyboardEvent, player: PlayerController): boolean {
   const command = event.ctrlKey || event.metaKey
@@ -52,6 +66,8 @@ function editKey(event: KeyboardEvent, player: PlayerController): boolean {
     if (lower === 'z' && !event.shiftKey) player.edit((editor) => editor.undo())
     else if (lower === 'y' || (lower === 'z' && event.shiftKey)) player.edit((editor) => editor.redo())
     else if (lower === 's') window.dispatchEvent(new Event(SAVE_EDITS_EVENT))
+    else if (lower === 'c') player.copyBeats()
+    else if (lower === 'v') pasteBeats(player)
     else if (key === 'ArrowLeft') player.edit((editor) => editor.stepBar(-1))
     else if (key === 'ArrowRight') player.edit((editor) => editor.stepBar(1))
     else return false
@@ -69,16 +85,18 @@ function editKey(event: KeyboardEvent, player: PlayerController): boolean {
   }
   switch (key) {
     case 'Escape':
-      player.deselect()
+      // A selection goes first, then the panel.
+      if (player.getSnapshot().editing?.selection) player.edit((editor) => editor.moveTo({}))
+      else player.deselect()
       return true
     case ' ':
       player.playPause()
       return true
     case 'ArrowLeft':
-      player.edit((editor) => editor.stepBeat(-1))
+      player.edit((editor) => editor.stepBeat(-1, event.shiftKey))
       return true
     case 'ArrowRight':
-      player.edit((editor) => editor.stepBeat(1))
+      player.edit((editor) => editor.stepBeat(1, event.shiftKey))
       return true
     case 'ArrowUp':
       player.edit((editor) => editor.stepString(1))

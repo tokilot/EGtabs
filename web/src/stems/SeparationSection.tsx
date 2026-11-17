@@ -74,7 +74,7 @@ export function SeparationSection({ device, blocked }: { device: StemDevice; blo
       <div className={styles.top}>
         <section className={panel.section} aria-label={t('模型')}>
           <h3>{t('模型')}</h3>
-          {models?.length === 0 && <p className={panel.hint}>{t('没有找到模型：把模型放进 data/models/separator/ 后刷新页面。')}</p>}
+          {models?.length === 0 && <p className={panel.hint}>{t('未找到模型，请先把模型放进 data/models/separator/。')}</p>}
           {models && model ? (
             <>
               <select className={styles.modelSelect} value={model.id} aria-label={t('模型')} onChange={(event) => pickModel(event.target.value)}>

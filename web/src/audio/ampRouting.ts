@@ -17,8 +17,8 @@ export function routedProgram(program: number): number {
 /** Channel -> program -> [amp bus, program to play, bank to play it from?]: what the synthesizer is told. */
 export type AmpRouting = Record<number, Record<number, [number, number] | [number, number, number]>>
 
-/** Per track index, a preset of an extra sound font: its bank as loaded, and its program. */
-export type TrackPresets = Record<string, { bank: number; program: number }>
+/** Per track index, a preset of an extra sound font: its bank as loaded, and its program; or a drum kit (`drums`). */
+export type TrackPresets = Record<string, { bank: number; program: number; drums?: boolean }>
 
 export interface TrackChannels {
   index: number
@@ -31,6 +31,9 @@ export interface AmpPlan {
   /** The tone of each bus, bus 1 first. */
   buses: Tone[]
 }
+
+/** The General MIDI bank of drum kits. */
+export const DRUM_BANK = 128
 
 /** The amp buses there are (the worklet has this many outputs besides the main one). */
 export const MAX_AMP_BUSES = 8
@@ -68,8 +71,15 @@ export function planAmpBuses(
   const busOf = new Map<string, number>()
   const room = preview ? MAX_AMP_BUSES - 1 : MAX_AMP_BUSES
   for (const track of tracks) {
-    if (track.isPercussion) continue
     const preset = presets[track.index]
+    // A drum track can be given another drum kit (2026-11-17) and nothing else; drums go through no amp. The tab's
+    // drums always ask for program 0, so only that is routed: a preview asking for a kit by its program plays it.
+    if (track.isPercussion) {
+      if (!preset?.drums) continue
+      for (const channel of track.channels) (routing[channel] ??= {})[0] = [0, preset.program, preset.bank]
+      continue
+    }
+    if (preset?.drums) continue
     if (preset) {
       for (const channel of track.channels) {
         const programs = (routing[channel] ??= {})

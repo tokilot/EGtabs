@@ -142,7 +142,7 @@ export function TranscriptionSection({ device, blocked }: { device: StemDevice; 
       <div className={styles.top}>
         <section className={panel.section} aria-label={t('模型')}>
           <h3>{t('模型')}</h3>
-          {models?.length === 0 && <p className={panel.hint}>{t('没有找到模型：把模型放进 data/models/transcriber/ 后刷新页面。')}</p>}
+          {models?.length === 0 && <p className={panel.hint}>{t('未找到模型，请先把模型放进 data/models/transcriber/。')}</p>}
           {models && model ? (
             <>
               <select className={styles.modelSelect} value={model.id} aria-label={t('模型')} onChange={(event) => pickModel(event.target.value)}>
@@ -210,7 +210,7 @@ export function TranscriptionSection({ device, blocked }: { device: StemDevice; 
 
       {selected && (
         <section className={panel.section} aria-label={selected.name}>
-          <TaskHead item={selected} onRemove={() => void tasks.remove(selected, t('删除"{name}"的 MIDI？', { name: selected.name }), api.deleteTranscription)} />
+          <TaskHead item={selected} onRemove={() => void tasks.remove(selected, t('是否删除 {name} 的 MIDI？', { name: selected.name }), api.deleteTranscription)} />
           <TaskProgress item={selected} label={t('转换进度')} statusText={statusText} />
           {selected.status === 'failed' && <p className={styles.error}>{t('转换失败：{error}', { error: selected.error ?? '' })}</p>}
           {selected.status === 'done' && selected.midi && (
@@ -223,7 +223,7 @@ export function TranscriptionSection({ device, blocked }: { device: StemDevice; 
                       ? t('共 {notes} 个音符，按 {bpm} BPM 匀速', { notes: selected.midi.notes, bpm: Math.round(selected.midi.bpm) })
                       : t('共 {notes} 个音符，速度约 {bpm} BPM', { notes: selected.midi.notes, bpm: Math.round(selected.midi.bpm) })}
                 </p>
-                {selected.midi.parts.length > 0 && <p>{t('识别出的乐器：{names}', { names: selected.midi.parts.map(partLabel).join('、') })}</p>}
+                {selected.midi.parts.length > 0 && <p>{t('乐器识别：{names}', { names: selected.midi.parts.map(partLabel).join('、') })}</p>}
               </div>
               <a className={`${panel.primary} ${styles.importButton}`} href={api.midiUrl(selected.id)} download={`${selected.name}.mid`}>
                 <Download size={16} aria-hidden />

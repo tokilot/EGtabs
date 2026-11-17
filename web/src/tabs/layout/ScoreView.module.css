@@ -64,7 +64,8 @@
 }
 
 .editBeat,
-.editNote {
+.editNote,
+.editSelection {
   position: absolute;
   z-index: 1001;
   pointer-events: none;
@@ -74,6 +75,12 @@
 /* The beat being edited: a soft column. */
 .editBeat {
   background: rgb(255 159 10 / 10%);
+}
+
+/* The beats selected for copying (shift + arrows or click): a blue band across them. */
+.editSelection {
+  background: rgb(10 132 255 / 16%);
+  outline: 1px solid rgb(10 132 255 / 45%);
 }
 
 /* The string position being edited: an outlined box, filled when there is a note in it. */
@@ -140,4 +147,34 @@
 .scoreView :global(.at-highlight *) {
   fill: var(--accent);
   stroke: var(--accent);
+}
+
+/* The title and artist on the score while editing: over the drawn text, in its place and size. */
+.headerField {
+  position: absolute;
+  z-index: 1003;
+  box-sizing: border-box;
+  padding: 0 4px;
+  border: none;
+  border-bottom: 1px dashed var(--text-muted);
+  border-radius: 4px 4px 0 0;
+  background: var(--score-bg);
+  color: var(--score-text);
+  font-family: inherit;
+  line-height: 1;
+  text-align: center;
+}
+
+.headerField:hover {
+  background: color-mix(in srgb, var(--score-bg) 88%, var(--accent));
+}
+
+.headerField:focus {
+  outline: none;
+  border-bottom: 2px solid var(--accent);
+}
+
+.headerField::placeholder {
+  color: var(--text-muted);
+  font-weight: 400;
 }

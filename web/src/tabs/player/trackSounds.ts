@@ -3,13 +3,15 @@
 // by hand on the tone page, each in a bank of its own; a track given one of their presets plays it through the
 // routing table (audio/ampRouting.ts), the tab itself is not changed.
 import type { SoundFont } from '../../../../contracts/soundFonts.ts'
-import type { TrackPresets } from '../../audio/ampRouting.ts'
+import { DRUM_BANK, type TrackPresets } from '../../audio/ampRouting.ts'
 import { INSTRUMENT_CATEGORIES, instrumentPlace } from './trackEdits.ts'
 
 /** What is kept with a song: the file of the sound font and the preset's program in it. */
 export interface TrackSound {
   font: string
   program: number
+  /** A drum kit of that set (2026-11-17), for a drum track: `program` is the one it plays from the drum bank. */
+  drums?: boolean
 }
 
 /** Track index -> its preset. */
@@ -26,7 +28,11 @@ export interface ExtraSoundFont {
   presets: Array<{ program: number; name: string }>
   /** The main set's added presets: loaded with it, nothing more to fetch. */
   main?: boolean
+  /** Its drum kits, each played from the drum bank by this program (contracts/soundFonts.ts). */
+  drums?: Array<{ program: number; name: string }>
 }
+
+const OLD_MAIN_KITS = '#drums'
 
 /** Stored presets made safe: track indexes to a font name and a program 0–127. */
 export function cleanTrackSounds(raw: unknown): TrackSounds {
@@ -34,18 +40,24 @@ export function cleanTrackSounds(raw: unknown): TrackSounds {
   if (!raw || typeof raw !== 'object') return result
   for (const [index, given] of Object.entries(raw as Record<string, unknown>)) {
     if (!/^\d+$/.test(index) || !given || typeof given !== 'object') continue
-    const { font, program } = given as Record<string, unknown>
+    const { font, program, drums } = given as Record<string, unknown>
     if (typeof font === 'string' && font && Number.isInteger(program) && (program as number) >= 0 && (program as number) <= 127) {
-      result[index] = { font, program: program as number }
+      result[index] = drums === true || font === OLD_MAIN_KITS ? { font, program: program as number, drums: true } : { font, program: program as number }
     }
   }
   return result
 }
 
-/** The preset a track was given, among the fonts loaded; null when its font or preset is gone. */
+/** The preset a track was given (a drum kit for a drum track), among the sets loaded; null when it is gone. */
 export function findPreset(fonts: ExtraSoundFont[], sound: TrackSound | undefined): { font: ExtraSoundFont; name: string } | null {
   if (!sound) return null
-  const font = fonts.find((item) => item.name === sound.font)
+  if (sound.drums) {
+    // "#drums" was the main set's kits in the first version of this (2026-11-16).
+    const font = fonts.find((item) => (item.name === sound.font || (sound.font === OLD_MAIN_KITS && item.main)) && item.drums?.some((kit) => kit.program === sound.program))
+    const kit = font?.drums?.find((item) => item.program === sound.program)
+    return font && kit ? { font: { ...font, bank: DRUM_BANK, presets: font.drums ?? [] }, name: kit.name } : null
+  }
+  const font = fonts.find((item) => item.name === sound.font && item.presets.some((preset) => preset.program === sound.program))
   const preset = font?.presets.find((item) => item.program === sound.program)
   return font && preset ? { font, name: preset.name } : null
 }
@@ -55,13 +67,13 @@ export function trackPresets(fonts: ExtraSoundFont[], sounds: TrackSounds): Trac
   const result: TrackPresets = {}
   for (const [index, sound] of Object.entries(sounds)) {
     const found = findPreset(fonts, sound)
-    if (found) result[index] = { bank: found.font.bank, program: sound.program }
+    if (found) result[index] = sound.drums ? { bank: DRUM_BANK, program: sound.program, drums: true } : { bank: found.font.bank, program: sound.program }
   }
   return result
 }
 
 export function sameSound(a: TrackSound | null | undefined, b: TrackSound | null | undefined): boolean {
-  return (a ?? null) === (b ?? null) || (!!a && !!b && a.font === b.font && a.program === b.program)
+  return (a ?? null) === (b ?? null) || (!!a && !!b && a.font === b.font && a.program === b.program && !!a.drums === !!b.drums)
 }
 
 // Words in a preset's or a file's name, and the kind of instrument (a label in INSTRUMENT_CATEGORIES) they say.

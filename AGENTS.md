@@ -79,12 +79,19 @@ npm run fixtures     # 把测试曲目下载到 test/songs/
 - 独奏、静音、音量按 MIDI 通道保存，换曲子不会清零：`resetMixer()` / `applyMixer()`。
 - 每个小节的声部数量必须一致，任何声部都不能没有拍；长短混合的三连音分组不可靠（导入 MIDI 时写成等长三连音）。
 - 循环区间要等渲染完才能设；`renderFinished` 时谱面的 svg 可能还没插进页面；新的 bounds 要等 `postRenderFinished`。
+- 鼓音符的 `percussionArticulation`：音轨有自己的 `percussionArticulations` 时是表内下标，没有时是鼓件编号（我们的在线曲谱和 MIDI 转换器都是后者）。
+  原版 GP7 导出器对没有表的音轨写默认表却照抄编号，读回来全错成邦戈、康加（2026-11-17）；补丁已改导出器，之前存坏的谱在
+  `onScoreLoaded` 里由 `drumArticulations.ts` 修复。鼓组：路由只接管鼓通道的 program 0，`midiDrums` 分支也读路由表（补丁）。
 - `alphatab-patches.ts` 找不到原文就报错；升级 alphaTab 后先跑构建，逐条核对补丁。
 
 ## 开发服务器
 
-- `npm run dev` 用 `node --watch-path=src --watch-path=../contracts`，只监视后端源码和共用类型，不能改回 `--watch`：Vite 读 `vite.config.ts` 时会生成一个临时文件、加载后马上删掉，`--watch` 会把它当成改动，无限重启（2026-11-11 踩过）。
-- 端口被占用时 `dev.ts` 会直接说明并退出。
+- `npm run dev` 跑 `server/src/devWatch.ts`：它启动 `dev.ts`，监视 `server/src/`、`contracts/`，以及 `web/alphatab-patches.ts`、`web/vite.config.ts`
+  这两个文件（Vite 在内存里留着上次打过补丁的 alphaTab，改补丁要整个重启，之后刷新页面），改了就重启。不要改成监视 `web/`
+  或用 `node --watch`：Vite 读 `vite.config.ts` 时会生成一个临时文件、加载后马上删掉，会被当成改动而无限重启（2026-11-11 踩过）。
+- 也不要换回 `node --watch-path`：它在一次启动失败后只等下一次改动，而 Windows 上刚重启时旧进程可能还占着端口或文件，
+  偶尔失败一下后端就一直停着（2026-11-12）。`devWatch.ts` 启动失败会隔 1.5 秒重试 3 次，还失败（代码真有错）才等改动。
+- 端口被占用时 `dev.ts` 会说明原因并退出；真有另一个 `npm run dev` 在跑时，`devWatch.ts` 重试 3 次后停下等改动。
 
 ## Python（转谱页，可选）
 

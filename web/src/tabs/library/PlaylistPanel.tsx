@@ -69,7 +69,7 @@ export function PlaylistPanel({ onPick }: { onPick?: () => void }) {
   return (
     <div className={styles.panel}>
       {error && <p className={list.message}>{error}</p>}
-      {!error && playlists?.length === 0 && <p className={list.message}>{t('还没有播放集。')}</p>}
+      {!error && playlists?.length === 0 && <p className={list.message}>{t('播放集为空。')}</p>}
       <ul>
         {playlists?.map((playlist) => (
           <li key={playlist.id}>
@@ -141,7 +141,7 @@ function PlaylistSongs({ playlist, library, onBack, onChange, onDelete, onPick }
   }
 
   const remove = async () => {
-    if (!window.confirm(translate('确认删除播放集「{name}」？', { name: playlist.name }))) return
+    if (!window.confirm(translate('是否删除「{name}」？', { name: playlist.name }))) return
     await api.deletePlaylist(playlist.id)
     if (queue?.playlistId === playlist.id) setPlaylistQueue(null)
     onDelete()
@@ -216,7 +216,7 @@ function PlaylistSongs({ playlist, library, onBack, onChange, onDelete, onPick }
                 else setDraft(null)
               }}
             >
-              <span className={styles.grip} title={t('拖动调整顺序')} aria-hidden>
+              <span className={styles.grip} aria-hidden>
                 <GripVertical size={16} />
               </span>
               <button type="button" className={list.open} onClick={() => play(index, false)}>

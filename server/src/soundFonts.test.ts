@@ -136,6 +136,43 @@ describe('sound fonts', () => {
     expect(fonts[1].added).toBeUndefined()
   })
 
+  it('lists every set\'s drum kits, an extra set\'s on programs the main set\'s kits do not use', async () => {
+    const dir = path.join(dataDir, 'soundfonts')
+    mkdirSync(dir)
+    const main = soundFont(
+      [...Array.from({ length: 128 }, (_, program) => [0, program, `GM ${program}`] as [number, number, string]), [128, 0, 'Standard'], [128, 25, '808']],
+      [1],
+    )
+    writeFileSync(path.join(dir, 'GeneralUser-GS.sf2'), main)
+    // A small drum set keeps its kit in bank 0; another set has one in the drum bank and a melodic preset.
+    writeFileSync(path.join(dir, 'MetalDrums.sf2'), soundFont([[0, 0, 'Drumkit']], [1]))
+    writeFileSync(path.join(dir, 'Other.sf2'), soundFont([[0, 30, 'Lead'], [128, 0, 'Rock Kit']], [1]))
+    const app = setup()
+    const fonts = (await (await app.request('/api/soundfonts')).json()) as SoundFont[]
+    const byName = Object.fromEntries(fonts.map((font) => [font.name, font]))
+    expect(byName['GeneralUser-GS.sf2'].drums).toEqual([
+      { program: 0, name: 'Standard' },
+      { program: 25, name: '808' },
+    ])
+    expect(byName['MetalDrums.sf2']).toMatchObject({ presets: [], drums: [{ program: 1, name: 'Drumkit' }] })
+    expect(byName['Other.sf2']).toMatchObject({ presets: [{ program: 30, name: 'Lead' }], drums: [{ program: 2, name: 'Rock Kit' }] })
+    // Served with each kit in the drum bank on the program it was given.
+    const served = parseSoundFont(Buffer.from(await (await app.request('/api/soundfonts/MetalDrums.sf2')).arrayBuffer()))!
+    expect(served.presets).toEqual([{ bank: 128, program: 1, name: 'Drumkit' }])
+    const other = parseSoundFont(Buffer.from(await (await app.request('/api/soundfonts/Other.sf2')).arrayBuffer()))!
+    expect(other.presets.map(({ bank, program }) => [bank, program])).toEqual([[EXTRA_BANK + 1, 30], [128, 2]])
+  })
+
+  it('does not take a steel drum, or a General MIDI set\'s bank 0, for a drum kit', async () => {
+    const dir = path.join(dataDir, 'soundfonts')
+    mkdirSync(dir)
+    writeFileSync(path.join(dir, 'GeneralUser-GS.sf2'), GM)
+    writeFileSync(path.join(dir, 'Islands.sf2'), soundFont([[0, 114, 'Steel Drums']], [1]))
+    const fonts = (await (await setup().request('/api/soundfonts')).json()) as SoundFont[]
+    expect(fonts.map((font) => font.drums)).toEqual([undefined, undefined])
+    expect(fonts[1].presets).toEqual([{ program: 114, name: 'Steel Drums' }])
+  })
+
   it('serves a set other than the main one moved to its bank, with every sample mono', async () => {
     const dir = path.join(dataDir, 'soundfonts')
     mkdirSync(dir)
@@ -143,8 +180,8 @@ describe('sound fonts', () => {
     const response = await setup().request('/api/soundfonts/Guitar.sf2')
     const bytes = Buffer.from(await response.arrayBuffer())
     const parsed = parseSoundFont(bytes)!
-    // Bank 0 to its bank; a variation and a drum kit out of the way.
-    expect(parsed.presets.map((preset) => preset.bank)).toEqual([EXTRA_BANK, EXTRA_BANK, EXTRA_BANK, EXTRA_BANK, EXTRA_BANK, 2047, 2047])
+    // Bank 0 to its bank; a variation out of the way; its drum kit stays in the drum bank (no other kit there).
+    expect(parsed.presets.map((preset) => preset.bank)).toEqual([EXTRA_BANK, EXTRA_BANK, EXTRA_BANK, EXTRA_BANK, EXTRA_BANK, 2047, 128])
     const types = Array.from({ length: 6 }, (_, index) => bytes.readUInt16LE(parsed.shdr.offset + index * 46 + 44))
     // ROM and compressed flags stay.
     expect(types).toEqual([1, 1, 1, 1, 0x8001, 0x11])

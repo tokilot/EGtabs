@@ -17,7 +17,7 @@ kept on your own computer, and the backend only listens on `127.0.0.1`. The inte
   the site in question regarding copyright.
 - MIDI files are turned into tablature on import: the rhythm is quantized, a tuning is picked, and strings and frets
   are chosen so the hand moves as little as possible.
-- Edit notes directly on the tab, with undo; edit tracks.
+- Edit notes directly on the tab, with undo; select beats by dragging, Shift + arrows or Shift-click, and copy them to the same or another track; while editing, change the title and artist right on the score; edit tracks, and give a drum track another drum kit.
 
 **Practice**
 - Practice mode: practice speed, count-in, looped bars, metronome, automatic track switches.

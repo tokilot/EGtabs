@@ -123,7 +123,12 @@ async function cursorPosition(page: Page): Promise<string> {
 }
 
 async function main() {
-  start('node', ['src/index.ts'], path.join(root, 'server'), { TABS_PORT: String(API_PORT), TABS_DATA_DIR: dataDir, TABS_SOUNDFONTS: path.join(root, 'data/soundfonts'), TABS_DEMO_SONGS: path.join(dataDir, 'no-demo') })
+  start('node', ['src/index.ts'], path.join(root, 'server'), {
+    TABS_PORT: String(API_PORT),
+    TABS_DATA_DIR: dataDir,
+    TABS_SOUNDFONTS: path.join(root, 'data/soundfonts'),
+    TABS_DEMO_SONGS: path.join(dataDir, 'no-demo'),
+  })
   start('npx', ['vite', '--port', String(WEB_PORT), '--strictPort'], path.join(root, 'web'), { TABS_PORT: String(API_PORT) })
   await waitFor(`http://127.0.0.1:${API_PORT}/api/songs`)
   await waitFor(BASE)
@@ -490,9 +495,15 @@ async function main() {
     assert(/^1=[#♭]?[A-G]$/.test(await key()), `the box's key reads "${await key()}"`)
     assert((await names()) === (await expected(0)), `at the start the box shows "${await names()}" (expected "${await expected(0)}")`)
     for (let i = 0; i < 4; i++) await page.keyboard.press('ArrowRight')
-    await page.waitForTimeout(500)
     const fifthBar = await expected(4)
-    assert(fifthBar && (await names()) === fifthBar, `in bar 5 the box shows "${await names()}" (expected ${fifthBar})`)
+    // The box follows the position as alphaTab reports it, which can take a moment on a busy machine.
+    for (let waited = 0; waited < 3000 && (await names()) !== fifthBar; waited += 200) await page.waitForTimeout(200)
+    const at = await page.evaluate(() => {
+      const player = (window as unknown as { __tabsPlayer: { api: { tickPosition: number; tickCache: { masterBars: Array<{ start: number; end: number }> } } } }).__tabsPlayer
+      const tick = player.api.tickPosition
+      return { tick, bar: player.api.tickCache.masterBars.findIndex((bar) => tick >= bar.start && tick < bar.end) + 1, focus: document.activeElement?.outerHTML.slice(0, 80) }
+    })
+    assert(fifthBar && (await names()) === fifthBar, `in bar 5 the box shows "${await names()}" (expected ${fifthBar}); at ${JSON.stringify(at)}`)
 
     // Picked by hand: G major, so G is do. Kept with the song.
     await box.click()
@@ -1449,6 +1460,105 @@ async function main() {
     const restored = await probe()
     assert(!restored.editing && restored.frets === before.frets, 'restoring did not bring back the original tab')
   })
+  await check('tab editor: shift-select and drag-select beats, copy, paste two bars on; rename the song on the score, saved to the library too', async () => {
+    type Snap = { editing: null | { cursor: { bar: number; beat: number }; selection: { beats: number } | null; selectionBoxes: unknown[]; clipboard: number }; trackIndex: number; title: string }
+    type Player = { getSnapshot(): Snap; barsText(track: number, from: number, to: number): string }
+    const snap = () => page.evaluate(() => (window as unknown as { __tabsPlayer: Player }).__tabsPlayer.getSnapshot()) as Promise<Snap>
+    // The beats from a bar on (1-based), as "duration notes", across bar lines.
+    const beatsFrom = (bar: number, beat: number, count: number) =>
+      page.evaluate(
+        ([bar, beat, count]) => {
+          const player = (window as unknown as { __tabsPlayer: Player }).__tabsPlayer
+          const track = player.getSnapshot().trackIndex
+          const lines = player.barsText(track, bar, bar + 3).split('\n').slice(1)
+          const beats = lines.flatMap((line) => line.slice(line.indexOf(': ') + 2).split(' | ').map((item) => item.replace(/^\d+\) /, '')))
+          return beats.slice(beat, beat + count)
+        },
+        [bar, beat, count] as const,
+      )
+    const songsNow = async () => (await (await fetch(`http://127.0.0.1:${API_PORT}/api/songs`)).json()) as Array<{ id: number; title: string; artist: string }>
+    const [original] = await songsNow()
+    const editButton = page.locator('header').getByRole('button', { name: '编辑曲谱' })
+    await editButton.click()
+    await page.waitForFunction(() => (window as unknown as { __tabsPlayer: Player }).__tabsPlayer.getSnapshot().editing)
+    await page.waitForTimeout(400)
+    // The first key picks the spot the editor opened at; then into bar 5, and select three beats from its first.
+    await page.keyboard.press('Home')
+    for (let i = 0; i < 4; i++) await page.keyboard.press('Control+ArrowRight')
+    const start = (await snap()).editing!.cursor
+    await page.keyboard.press('Shift+ArrowRight')
+    await page.keyboard.press('Shift+ArrowRight')
+    const selected = await snap()
+    assert(selected.editing?.selection?.beats === 3, `selected ${JSON.stringify(selected.editing?.selection)}`)
+    assert((selected.editing?.selectionBoxes.length ?? 0) > 0, 'the selection should be drawn on the score')
+    const copied = await beatsFrom(start.bar + 1, start.beat, 3)
+    await page.keyboard.press('Control+c')
+    await page.waitForFunction(() => (window as unknown as { __tabsPlayer: Player }).__tabsPlayer.getSnapshot().editing?.clipboard === 3)
+    // Two bars on, pasted over the start of that bar.
+    await page.keyboard.press('Control+ArrowRight')
+    await page.keyboard.press('Control+ArrowRight')
+    const target = (await snap()).editing!.cursor
+    await page.keyboard.press('Control+v')
+    await page.waitForTimeout(500)
+    const pasted = await beatsFrom(target.bar + 1, 0, 3)
+    assert(JSON.stringify(pasted) === JSON.stringify(copied), `pasted ${JSON.stringify(pasted)}, copied ${JSON.stringify(copied)}`)
+
+    // Pressed on a beat and dragged two bars on: the selection runs from that beat to the one under the pointer.
+    const points = await page.evaluate(
+      ([bar]) => {
+        type Bounds = { x: number; y: number; w: number; h: number }
+        const player = (window as unknown as {
+          __tabsPlayer: { api: { container: { element: HTMLElement }; boundsLookup: { findMasterBarByIndex(index: number): { realBounds: Bounds } | null } } }
+        }).__tabsPlayer
+        const origin = player.api.container.element.getBoundingClientRect()
+        const at = (index: number) => {
+          const bounds = player.api.boundsLookup.findMasterBarByIndex(index)!.realBounds
+          return { x: origin.left + bounds.x + bounds.w * 0.3, y: origin.top + bounds.y + bounds.h * 0.55 }
+        }
+        return { from: at(bar), to: at(bar + 1) }
+      },
+      [start.bar] as const,
+    )
+    await page.mouse.move(points.from.x, points.from.y)
+    await page.mouse.down()
+    await page.mouse.move((points.from.x + points.to.x) / 2, points.to.y, { steps: 4 })
+    await page.mouse.move(points.to.x, points.to.y, { steps: 4 })
+    await page.mouse.up()
+    const dragged = (await snap()).editing
+    assert(dragged?.selection && dragged.selection.beats > 1 && dragged.cursor.bar === start.bar + 1, `after dragging: ${JSON.stringify(dragged?.selection)} at ${JSON.stringify(dragged?.cursor)}`)
+
+    // The song's title and artist, edited where the score shows them (drawn by alphaTab) while the tab is edited.
+    await page.locator('main').evaluate((element) => element.scrollTo(0, 0))
+    const titleField = page.locator('main').getByRole('textbox', { name: '曲名', exact: true })
+    await titleField.fill('Promise (edited)')
+    await titleField.press('Enter')
+    await page.waitForFunction(() => [...document.querySelectorAll('main svg text')].some((text) => text.textContent === 'Promise (edited)'))
+    const artistField = page.locator('main').getByRole('textbox', { name: '作者', exact: true })
+    await artistField.fill('Someone Else')
+    await artistField.press('Enter')
+    await page.waitForFunction(() => [...document.querySelectorAll('main svg text')].some((text) => text.textContent === 'Someone Else'))
+    assert((await page.locator('header').innerText()).includes('Promise (edited)'), 'the top bar should show the new title')
+    assert((await snap()).title === 'Promise (edited)', `the player shows ${(await snap()).title}`)
+    await page.locator('header').getByRole('button', { name: '保存修改' }).click()
+    await editButton.waitFor({ timeout: 15_000 })
+    const [renamed] = await songsNow()
+    assert(renamed.title === 'Promise (edited)' && renamed.artist === 'Someone Else', `the library has ${JSON.stringify(renamed)}`)
+
+    // Back as it was for the checks after this one: the original tab, and the library's own title.
+    await editButton.click()
+    await page.waitForTimeout(400)
+    await page.keyboard.press('Home')
+    await page.getByRole('dialog', { name: '曲谱编辑' }).getByRole('button', { name: '恢复原谱' }).click()
+    await waitReady(page)
+    await fetch(`http://127.0.0.1:${API_PORT}/api/songs/${original.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title: original.title, artist: original.artist }),
+    })
+    await page.reload()
+    await waitReady(page)
+  })
+
   await check('reopening the song makes no Songsterr request', async () => {
     const before = await (await fetch(`http://127.0.0.1:${API_PORT}/api/songs`)).json()
     assert(Array.isArray(before) && before.length === 1, 'library should hold one song')
@@ -1517,7 +1627,10 @@ async function main() {
   await check('logo returns to the library, which lists both songs', async () => {
     await page.getByRole('link', { name: '曲库首页' }).click()
     await page.getByRole('heading', { name: '我的曲谱' }).waitFor()
-    assert((await page.locator('main li').count()) === 2, 'expected two songs in the library')
+    // The heading comes before the list has loaded.
+    await page.waitForFunction(() => document.querySelectorAll('main li').length > 0).catch(() => undefined)
+    const items = await page.locator('main li').allInnerTexts()
+    assert(items.length === 2, `expected two songs in the library, found ${JSON.stringify(items)}`)
     await shot(page, '09-library')
   })
   // In a browser of its own with the usual autoplay policy (the rest of this run lets pages play sound without a
@@ -1625,6 +1738,49 @@ async function main() {
     await page.locator('main svg').first().waitFor({ state: 'attached', timeout: 8000 }).catch(() => undefined)
     assert((await page.locator('main svg').count()) > 0, 'the MIDI tab did not render')
     await shot(page, '19b-midi-import')
+
+    // The drums' kit, in the track editor: another kit of the main set is kept with the song, and back again.
+    type Sounds = { __tabsPlayer: { getSnapshot(): { trackSounds: Record<string, { font: string; program: number }> } } }
+    const drumSound = () => page.evaluate(() => (window as unknown as Sounds).__tabsPlayer.getSnapshot().trackSounds['1'] ?? null)
+    await control(page, '乐器').click()
+    await page.getByRole('dialog', { name: '乐器与混音' }).getByRole('button', { name: '编辑 Drums' }).click()
+    const kitEditor = page.getByRole('dialog', { name: '编辑音轨' })
+    await kitEditor.getByRole('list', { name: '鼓组' }).getByRole('button', { name: '808/909 鼓组' }).click()
+    await kitEditor.getByRole('button', { name: '应用' }).click()
+    await page.waitForFunction(() => (window as unknown as Sounds).__tabsPlayer.getSnapshot().trackSounds['1']?.program === 25)
+    const sound = await drumSound()
+    assert(sound?.program === 25 && (sound as { drums?: boolean }).drums === true && /\.sf2$/.test(sound.font), `the drums play ${JSON.stringify(sound)}`)
+    if (await kitEditor.isVisible()) await page.keyboard.press('Escape')
+    if (!(await page.getByRole('dialog', { name: '乐器与混音' }).isVisible())) await control(page, '乐器').click()
+    await page.getByRole('dialog', { name: '乐器与混音' }).getByRole('button', { name: '编辑 Drums' }).click()
+    assert((await kitEditor.getByRole('button', { name: '808/909 鼓组' }).getAttribute('aria-pressed')) === 'true', 'the kit should be shown as picked')
+    await shot(page, '19c-drum-kits')
+    // The standard kit is what plays with no kit given: picking it gives none.
+    await kitEditor.getByRole('button', { name: '标准鼓组 1' }).click()
+    await kitEditor.getByRole('button', { name: '应用' }).click()
+    await page.waitForFunction(() => !(window as unknown as Sounds).__tabsPlayer.getSnapshot().trackSounds['1'])
+    if (await kitEditor.isVisible()) await page.keyboard.press('Escape')
+    for (const name of ['乐器与混音']) if (await page.getByRole('dialog', { name }).isVisible()) await page.keyboard.press('Escape')
+
+    // "New track" under the mixer's tracks: an empty guitar track at the end, saved with the song, its editor open.
+    type Count = { __tabsPlayer: { api: { score: { tracks: Array<{ name: string; staves: Array<{ bars: unknown[] }> }> } } } }
+    const tracksBefore = await page.evaluate(() => (window as unknown as Count).__tabsPlayer.api.score.tracks.length)
+    await control(page, '乐器').click()
+    await page.getByRole('dialog', { name: '乐器与混音' }).getByRole('button', { name: '新建音轨' }).click()
+    await page.getByRole('dialog', { name: '编辑音轨' }).waitFor()
+    await page.waitForFunction((count) => (window as unknown as Count).__tabsPlayer.api.score.tracks.length === count + 1, tracksBefore, { timeout: 15_000 })
+    const newTrack = await page.evaluate(() => {
+      const score = (window as unknown as Count).__tabsPlayer.api.score
+      const track = score.tracks[score.tracks.length - 1]
+      return { name: track.name, bars: track.staves[0].bars.length, others: score.tracks[0].staves[0].bars.length }
+    })
+    assert(newTrack.name === '新音轨' && newTrack.bars === newTrack.others, `the new track is ${JSON.stringify(newTrack)}`)
+    const addedSongs = (await (await fetch(`http://127.0.0.1:${API_PORT}/api/songs`)).json()) as Array<{ edited: boolean; title: string }>
+    assert(addedSongs.find((item) => item.title.startsWith('Arpeggio'))?.edited === true, 'the tab with the new track should be saved as the edited tab')
+    // And deleted again, for the checks after this one.
+    await page.getByRole('dialog', { name: '编辑音轨' }).getByRole('button', { name: '删除音轨' }).click()
+    await page.waitForFunction((count) => (window as unknown as Count).__tabsPlayer.api.score.tracks.length === count, tracksBefore, { timeout: 15_000 })
+    for (const name of ['编辑音轨', '乐器与混音']) if (await page.getByRole('dialog', { name }).isVisible()) await page.keyboard.press('Escape')
 
     // "Delete track" in the track editor: the drums go from the tab, which is saved as the song's edited tab;
     // the last track left cannot be deleted. (The confirm dialog is accepted by the page's handler.)

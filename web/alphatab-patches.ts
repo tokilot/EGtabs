@@ -274,6 +274,33 @@ class TabClefGlyph extends MusicFontGlyph {`,
 	presetIndex = 0;`,
   },
   {
+    why: 'amp buses: a drum track given another kit plays it (the drum channel reads the routing table too)',
+    find: `		if (midiDrums) {
+			presetIndex = this._getPresetIndex(128 | c.bank & 32767, presetNumber);`,
+    replace: `		if (midiDrums) {
+			const drumRoutes = this.ampRouting ? this.ampRouting[channel] : void 0;
+			const drumRoute = drumRoutes ? drumRoutes[presetNumber] : void 0;
+			presetIndex = drumRoute && drumRoute.length > 2 ? this._getPresetIndex(drumRoute[2], drumRoute[1]) : -1;
+			if (presetIndex === -1) presetIndex = this._getPresetIndex(128 | c.bank & 32767, presetNumber);`,
+  },
+  {
+    // A drum note's percussionArticulation is an index into its track's own articulation list, or an articulation id
+    // when the track has none (as the tabs made here from online tabs and MIDI files). The Guitar Pro exporter writes
+    // the default list for such a track but left the ids in the notes, and reading the file back takes them for
+    // indices: a kick played a bongo, a hi-hat an agogo (2026-11-17). Write the note's place in the list written.
+    // Tabs saved before this are put right on loading (web/src/tabs/player/drumArticulations.ts).
+    why: 'Guitar Pro export: drum notes of a track without its own articulations point into the list written',
+    find: `		if (note.percussionArticulation >= 0) noteNode.addElement("InstrumentArticulation").innerText = note.percussionArticulation.toString();`,
+    replace: `		if (note.percussionArticulation >= 0) {
+			let articulationIndex = note.percussionArticulation;
+			if (note.beat.voice.bar.staff.track.percussionArticulations.length === 0) {
+				const written = Array.from(PercussionMapper.instrumentArticulations.values()).findIndex((articulation) => articulation.id === articulationIndex);
+				if (written >= 0) articulationIndex = written;
+			}
+			noteNode.addElement("InstrumentArticulation").innerText = articulationIndex.toString();
+		}`,
+  },
+  {
     why: 'amp buses: a routed channel goes to its bus and plays the program the route says',
     find: `		} else presetIndex = this._getPresetIndex(c.bank & 2047, presetNumber);
 		c.presetIndex = presetIndex;`,

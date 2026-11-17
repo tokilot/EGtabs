@@ -79,7 +79,7 @@ class Reader {
   }
 }
 
-const corrupt = () => new Error(translate('MIDI 文件已损坏。'))
+const corrupt = () => new Error(translate('文件存在问题。'))
 
 /** Track names are often in a legacy code page; UTF-8 when they decode as such, else kept byte by byte. */
 function decodeName(bytes: Uint8Array) {
@@ -92,15 +92,15 @@ function decodeName(bytes: Uint8Array) {
 
 export function readMidiFile(bytes: Uint8Array): MidiFile {
   const reader = new Reader(bytes)
-  if (bytes.length < 14 || reader.text(4) !== 'MThd') throw new Error(translate('这不是 MIDI 文件。'))
+  if (bytes.length < 14 || reader.text(4) !== 'MThd') throw new Error(translate('上传文件格式错误。'))
   const headerLength = reader.uint(4)
   const format = reader.uint(2)
   const trackCount = reader.uint(2)
   const division = reader.uint(2)
   reader.slice(headerLength - 6)
-  if (format > 1) throw new Error(translate('不支持这种 MIDI 文件（格式 {n}）。', { n: format }))
+  if (format > 1) throw new Error(translate('MIDI 文件不支持格式 {n}', { n: format }))
   // The top bit set means SMPTE frames instead of ticks per quarter note: no beats to put bars on.
-  if (division & 0x8000 || division === 0) throw new Error(translate('不支持按时间码计时的 MIDI 文件。'))
+  if (division & 0x8000 || division === 0) throw new Error(translate('MIDI 文件按时间码计时。'))
 
   const file: MidiFile = { ticksPerQuarter: division, tempos: [], timeSignatures: [], keySignatures: [], parts: [] }
   for (let track = 0; track < trackCount && !reader.done; track++) {

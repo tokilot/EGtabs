@@ -125,3 +125,28 @@
   background: var(--accent);
   color: var(--accent-text);
 }
+
+/* Below the tracks: a new empty track (2026-11-17). */
+.addTrack {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 6px;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius);
+  background: none;
+  color: var(--text-muted);
+  font: inherit;
+  cursor: pointer;
+}
+
+.addTrack:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.addTrack:disabled {
+  opacity: 0.5;
+  cursor: default;
+}

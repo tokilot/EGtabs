@@ -2,6 +2,7 @@
 // option to re-fret the notes so they keep sounding the same. Edits are stored per song and applied to the
 // score as loaded, before transposition.
 import { model, type Settings } from '@coderline/alphatab'
+import { restsFor } from './tabEditor.ts'
 import { refretStaff } from './transpose.ts'
 
 type Json = Record<string, any>
@@ -302,6 +303,48 @@ export function withoutTrack(score: model.Score, index: number, settings: Settin
   const object = JSON.parse(model.JsonConverter.scoreToJson(score)) as Json
   object.tracks.splice(index, 1)
   return model.JsonConverter.jsonToScore(JSON.stringify(object), settings)
+}
+
+/** The General MIDI program a new track starts with: clean electric guitar, which takes the tones. */
+export const NEW_TRACK_PROGRAM = 27
+
+/**
+ * The tab with one more track at the end (2026-11-17): a six-string guitar in standard tuning, rests filling every
+ * bar, on the first pair of MIDI channels no track uses (never the drums' 9). Its instrument and tuning are then
+ * picked in "edit track".
+ */
+export function withNewTrack(score: model.Score, settings: Settings, name: string): model.Score {
+  const copy = model.JsonConverter.jsonToScore(model.JsonConverter.scoreToJson(score), settings)
+  const used = new Set(copy.tracks.flatMap((track) => [track.playbackInfo.primaryChannel, track.playbackInfo.secondaryChannel]))
+  const free: number[] = []
+  for (let channel = 0; channel < 16 && free.length < 2; channel++) if (channel !== 9 && !used.has(channel)) free.push(channel)
+  const track = new model.Track()
+  track.name = name
+  track.shortName = name.slice(0, 10)
+  track.ensureStaveCount(1)
+  track.playbackInfo.program = NEW_TRACK_PROGRAM
+  track.playbackInfo.primaryChannel = free[0] ?? 0
+  track.playbackInfo.secondaryChannel = free[1] ?? free[0] ?? 1
+  const staff = track.staves[0]
+  staff.stringTuning = new model.Tuning('', [64, 59, 55, 50, 45, 40], false)
+  staff.showTablature = true
+  staff.showStandardNotation = false
+  copy.addTrack(track)
+  copy.masterBars.forEach((masterBar, index) => {
+    // The key the other tracks are written in, bar by bar.
+    const reference = copy.tracks[0].staves[0].bars[index]
+    const bar = new model.Bar()
+    if (reference) {
+      bar.keySignature = reference.keySignature
+      bar.keySignatureType = reference.keySignatureType
+    }
+    staff.addBar(bar)
+    const voice = new model.Voice()
+    bar.addVoice(voice)
+    for (const rest of restsFor(masterBar.calculateDuration(false))) voice.addBeat(rest)
+  })
+  copy.finish(settings)
+  return copy
 }
 
 /** Where a track's index goes when track `removed` is deleted: null for that track, one down for those after it. */

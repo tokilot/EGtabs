@@ -76,7 +76,7 @@ export function TonePage() {
   const pick = (id: string) => {
     setFontName(null)
     if (id === tone.id) return
-    if (dirty && !window.confirm(t('音色的修改还没保存，确认切换吗？'))) return
+    if (dirty && !window.confirm(t('未保存音色修改，是否切换？'))) return
     setSelectedId(id)
   }
 
@@ -100,7 +100,7 @@ export function TonePage() {
     setNaming(null)
   }
   const remove = () => {
-    if (!window.confirm(t('确认删除音色"{name}"？', { name: tone.name }))) return
+    if (!window.confirm(t('是否删除 {name} ？', { name: tone.name }))) return
     void toneStore.remove(tone.id)
     setSelectedId(library.custom.find((item) => item.id !== tone.id)?.id ?? FLYING_CLOUD_TONE.id)
   }
@@ -200,7 +200,7 @@ export function TonePage() {
                     className={styles.blockPower}
                     aria-label={t('开关{name}', { name: t(MODULES[id].label) })}
                     aria-pressed={draft[id].on}
-                    title={draft[id].on ? t('已开启') : t('已关闭')}
+                    title={draft[id].on ? t('已开启') : undefined}
                     onClick={() => toggle(id)}
                   >
                     <Power size={12} aria-hidden />

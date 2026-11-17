@@ -10,7 +10,7 @@ export async function request<T>(url: string, init?: RequestInit): Promise<T> {
   }
   if (!response.ok) {
     const body = (await response.json().catch(() => null)) as { error?: string } | null
-    throw new Error(body?.error ?? translate('请求失败（{status}）', { status: response.status }))
+    throw new Error(body?.error ?? translate('请求失败：{status}', { status: response.status }))
   }
   return (await response.json()) as T
 }

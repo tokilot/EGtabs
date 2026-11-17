@@ -18,4 +18,9 @@ export interface SoundFont {
   presets: SoundFontPreset[]
   /** The main set: the presets added to it (in a bank of their own), offered per track like an extra set's. */
   added?: { bank: number; presets: SoundFontPreset[] }
+  /**
+   * Its drum kits (2026-11-17), all played from the drum bank (128) by these programs: the main set's as they are,
+   * another set's moved to programs the main set's kits do not use (the bytes served are changed to match).
+   */
+  drums?: SoundFontPreset[]
 }

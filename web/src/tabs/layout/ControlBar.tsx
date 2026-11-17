@@ -357,7 +357,7 @@ export function ControlBar() {
               currentRevisionId={song.revisionId}
               onSwitch={async (revisionId) => {
                 // Edits belong to one revision; the server drops them when switching.
-                if (song.edited && !window.confirm(t('切换会丢掉你对这首曲谱保存过的修改，确定继续吗？'))) return
+                if (song.edited && !window.confirm(t('曲谱会丢失本地编辑历史，是否切换？'))) return
                 replace(await api.switchRevision(song.id, revisionId))
                 close()
                 await openSong(song.id)

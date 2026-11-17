@@ -50,7 +50,7 @@ export function SongList({ onPick }: SongListProps) {
   }
 
   const remove = async (song: Song) => {
-    if (!window.confirm(translate('从曲库删除「{title}」？', { title: song.title }))) return
+    if (!window.confirm(translate('是否删除「{title}」？', { title: song.title }))) return
     await api.deleteSong(song.id)
     if (current?.id === song.id) close()
     libraryChanged()

@@ -25,6 +25,7 @@ export function SampleLibrary({ font }: { font: SoundFontEntry }) {
   // own of the same kind.
   type Listed = SoundFontEntry['presets'][number] & { added: boolean }
   const groups = new Map<string, { label: string; bass: boolean; presets: Listed[] }>()
+  const kits = font.drums ?? []
   const all: Listed[] = [...font.presets.map((preset) => ({ ...preset, added: false })), ...(font.added?.presets ?? []).map((preset) => ({ ...preset, added: true }))]
   const placed = all.map((preset) => ({ preset, at: presetPlace(font.name, preset, font.kind) }))
   placed.sort((a, b) => a.at.category - b.at.category || a.at.sub - b.at.sub)
@@ -41,7 +42,7 @@ export function SampleLibrary({ font }: { font: SoundFontEntry }) {
       <div className={styles.toneRow}>
         <h2 className={styles.toneTitle}>{soundFontTitle(font.name)}</h2>
         <span className={styles.fontMeta}>
-          {font.kind === 'gm' ? t('GM 全套') : t('附加')} · {(font.bytes / 1e6).toFixed(1)} MB · {t('{n} 个预设', { n: all.length })}
+          {font.kind === 'gm' ? t('GM 全套') : t('附加')} · {(font.bytes / 1e6).toFixed(1)} MB · {t('{n} 个预设', { n: all.length + kits.length })}
         </span>
         {status === 'main' ? (
           <span className={styles.fontMeta}>{t('默认')}</span>
@@ -58,8 +59,7 @@ export function SampleLibrary({ font }: { font: SoundFontEntry }) {
           </button>
         )}
       </div>
-      {status === 'loaded' && <p className={panel.hint}>{t('已加载')}</p>}
-      {all.length === 0 && <p className={panel.hint}>{t('读取文件预设失败')}</p>}
+      {all.length === 0 && kits.length === 0 && <p className={panel.hint}>{t('读取文件预设失败')}</p>}
       {[...groups.entries()].map(([key, group]) => (
         <div key={key} className={styles.presetGroup}>
           <h3>{group.label}</h3>
@@ -80,6 +80,22 @@ export function SampleLibrary({ font }: { font: SoundFontEntry }) {
           </ul>
         </div>
       ))}
+      {/* Its drum kits (2026-11-17), heard as a short beat; given to a drum track in "edit track". */}
+      {kits.length > 0 && (
+        <div className={styles.presetGroup}>
+          <h3>{t('鼓组')}</h3>
+          <ul className={styles.presets}>
+            {kits.map((kit) => (
+              <li key={`drums/${kit.program}`}>
+                <button type="button" disabled={!playable} title={t('试听')} onClick={() => player.previewDrumKit({ font: font.name, program: kit.program, drums: true })}>
+                  <Play size={12} aria-hidden />
+                  <span>{kit.name}</span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
     </section>
   )
 }

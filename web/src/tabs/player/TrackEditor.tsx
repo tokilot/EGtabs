@@ -9,7 +9,7 @@ import { allTones, findTone } from '../../tones/library.ts'
 import { useTones } from '../../tones/toneStore.ts'
 import { InstrumentIcon } from './InstrumentIcon.tsx'
 import { openTrackEditor, useTrackEditor } from './trackEditorStore.ts'
-import { findPreset, presetPlace, sameSound, type TrackSound } from './trackSounds.ts'
+import { findPreset, presetPlace, sameSound, type ExtraSoundFont, type TrackSound } from './trackSounds.ts'
 import {
   INSTRUMENT_CATEGORIES,
   instrumentPlace,
@@ -34,7 +34,27 @@ function sameTuning(a: number[], b: number[]) {
   return a.length === b.length && a.every((pitch, index) => pitch === b[index])
 }
 
-/** "Edit track": name, instrument, strings, tuning and capo of one track, modelled on the site's dialog. */
+/** The main set's drum kits by their General MIDI program, named in the interface's language. */
+const KIT_NAMES: Record<number, string> = {
+  0: '标准鼓组 1',
+  1: '标准鼓组 2',
+  2: '标准鼓组 3',
+  8: '房间鼓组',
+  16: '力量鼓组',
+  24: '电子鼓组',
+  25: '808/909 鼓组',
+  26: '舞曲鼓组',
+  32: '爵士鼓组',
+  40: '鼓刷鼓组',
+  48: '管弦乐打击乐',
+  56: '音效鼓组',
+  127: 'CM-64 鼓组',
+}
+
+/**
+ * "Edit track": name, instrument, strings, tuning and capo of one track, modelled on the site's dialog. A drum
+ * track picks a drum kit in the same picker instead, and has no instrument options.
+ */
 export function TrackEditor() {
   const index = useTrackEditor()
   const { player, state } = usePlayer()
@@ -56,9 +76,14 @@ function EditorDialog({ index, current }: { index: number; current: TrackSetup }
   const [tuning, setTuning] = useState(current.tuning)
   const [capo, setCapo] = useState(current.capo)
   const [adjust, setAdjust] = useState(state.trackEdits[index]?.adjustFingering ?? true)
-  // Opens on the category and kind of the track's own instrument (or of the extra preset it plays).
+  // A drum track picks a drum kit (2026-11-17) in the same picker: its tabs are the loaded sample sets with kits.
+  const drums = current.isPercussion
+  const kitSets = state.extraSoundFonts.filter((font) => (font.drums?.length ?? 0) > 0)
+  // Opens on the category and kind of the track's own instrument (or of the extra preset it plays); a drum track on
+  // the set of its kit.
   const [place, setPlace] = useState(() => {
     const given = state.trackSounds[index]
+    if (drums) return { category: Math.max(0, kitSets.findIndex((font) => given?.drums && font.name === given.font)), sub: 0 }
     const found = findPreset(state.extraSoundFonts, given)
     return found && given ? presetPlace(found.font.name, { name: found.name, program: given.program }, found.font.kind) : instrumentPlace(current.program)
   })
@@ -82,7 +107,7 @@ function EditorDialog({ index, current }: { index: number; current: TrackSetup }
   const lastTrack = state.tracks.length <= 1
   const removeTrack = async () => {
     const trackName = state.tracks.find((track) => track.index === index)?.name ?? current.name
-    if (!song || !window.confirm(t('删除音轨「{name}」？删除后会保存为曲谱的编辑版，要找回只能恢复导入时的曲谱。', { name: trackName }))) return
+    if (!song || !window.confirm(t('是否删除「{name}」？', { name: trackName }))) return
     const bytes = player.trackRemovalFile(index)
     if (!bytes) return
     setDeleting(true)
@@ -134,6 +159,17 @@ function EditorDialog({ index, current }: { index: number; current: TrackSetup }
       })
       .map((preset) => ({ font: font.name, kind: font.kind, ...preset })),
   )
+  const kitLabel = (font: ExtraSoundFont, kit: { program: number; name: string }) => (font.main && KIT_NAMES[kit.program] ? t(KIT_NAMES[kit.program]) : kit.name)
+  const setLabel = (font: ExtraSoundFont) => (font.main ? t('内置') : font.name.replace(/\.sf[23]$/i, ''))
+  const kits = drums
+    ? (query ? kitSets : kitSets.slice(place.category, place.category + 1)).flatMap((font) =>
+        (font.drums ?? [])
+          .filter((kit) => !query || kitLabel(font, kit).toLowerCase().includes(query) || kit.name.toLowerCase().includes(query) || font.name.toLowerCase().includes(query))
+          .map((kit) => ({ font, kit })),
+      )
+    : []
+  // The main set's kit 0 (its standard kit) is what the drums play when no kit is given: picking it gives none.
+  const isDefaultKit = (font: ExtraSoundFont, kit: { program: number }) => !!font.main && kit.program === 0
   // The picked tone plays the preview (and stands in for itself, unchanged, on the tracks that use it).
   useEffect(() => {
     player.setEditedTone(tone)
@@ -168,7 +204,7 @@ function EditorDialog({ index, current }: { index: number; current: TrackSetup }
     const moved = player.setTrackEdit(index, Object.keys(edit).length > 0 ? edit : null)
     if (moved > 0)
       setMessage(
-        t('已应用；{n} 个音超出音域或无弦可放，已移动八度或删除。', {
+        t('{n} 个音超出音域或无弦可放，已移动八度或删除。', {
           n: moved,
         }),
       )
@@ -190,12 +226,29 @@ function EditorDialog({ index, current }: { index: number; current: TrackSetup }
           <input type="text" value={name} maxLength={60} onChange={(event) => setName(event.target.value)} />
         </label>
 
-        {current.isPercussion ? (
-          <p className={panel.hint}>{t('鼓轨只能修改名称。')}</p>
-        ) : (
-          <>
-            <section className={panel.section}>
-              <h3>{t('乐器')}</h3>
+        <section className={panel.section}>
+          <h3>{drums ? t('鼓组') : t('乐器')}</h3>
+          {drums ? (
+            kitSets.length > 1 && (
+              <div className={styles.groups} role="tablist" aria-label={t('音色库')}>
+                {kitSets.map((font, position) => (
+                  <button
+                    key={font.name}
+                    type="button"
+                    role="tab"
+                    aria-selected={!search && place.category === position}
+                    onClick={() => {
+                      setPlace({ category: position, sub: 0 })
+                      setSearch('')
+                    }}
+                  >
+                    {setLabel(font)}
+                  </button>
+                ))}
+              </div>
+            )
+          ) : (
+            <>
               <div className={styles.groups} role="tablist" aria-label={t('乐器大类')}>
                 {INSTRUMENT_CATEGORIES.map((item, position) => (
                   <button
@@ -227,158 +280,174 @@ function EditorDialog({ index, current }: { index: number; current: TrackSetup }
                   ))}
                 </div>
               )}
-              <div className={styles.searchRow}>
-                <input
-                  type="search"
-                  placeholder={t('搜索乐器…')}
-                  aria-label={t('搜索乐器…')}
-                  value={search}
-                  onChange={(event) => setSearch(event.target.value)}
-                />
+            </>
+          )}
+          <div className={styles.searchRow}>
+            <input
+              type="search"
+              placeholder={drums ? t('搜索鼓组…') : t('搜索乐器…')}
+              aria-label={drums ? t('搜索鼓组…') : t('搜索乐器…')}
+              value={search}
+              onChange={(event) => setSearch(event.target.value)}
+            />
+            <button
+              type="button"
+              className={panel.preview}
+              disabled={drums ? !state.canPreview : !state.canPlay}
+              onClick={() => (drums ? player.previewDrumKit(sound) : tone ? player.previewEditedTone() : player.previewInstrument(program, tuning, sound))}
+            >
+              <Play size={14} aria-hidden />
+              {t('试听')}
+            </button>
+          </div>
+          <ul className={styles.programs} aria-label={drums ? t('鼓组') : t('乐器')}>
+            {drums && query && kits.length === 0 && <li className={panel.hint}>{t('未找到相应鼓组。')}</li>}
+            {kits.map(({ font, kit }) => (
+              <li key={`${font.name}:${kit.program}`}>
                 <button
                   type="button"
-                  className={panel.preview}
-                  disabled={!state.canPlay}
-                  onClick={() => (tone ? player.previewEditedTone() : player.previewInstrument(program, tuning, sound))}
+                  title={font.name}
+                  aria-pressed={isDefaultKit(font, kit) ? !sound : !!sound?.drums && sound.font === font.name && sound.program === kit.program}
+                  onClick={() => setSound(isDefaultKit(font, kit) ? null : { font: font.name, program: kit.program, drums: true })}
                 >
-                  <Play size={14} aria-hidden />
-                  {t('试听')}
+                  {!font.main && <AudioWaveform size={15} aria-hidden className={styles.toneIcon} />}
+                  <span>{query && kitSets.length > 1 ? `${kitLabel(font, kit)} · ${setLabel(font)}` : kitLabel(font, kit)}</span>
                 </button>
-              </div>
-              <ul className={styles.programs} aria-label={t('乐器')}>
-                {programs.length === 0 && tones.length === 0 && presets.length === 0 && <li className={panel.hint}>{t('未找到相应乐器。')}</li>}
-                {programs.map((value) => (
-                  <li key={value}>
-                    <button
-                      type="button"
-                      aria-pressed={!tone && !sound && value === program}
-                      onClick={() => {
-                        setProgram(value)
-                        setToneId(null)
-                        setSound(null)
-                      }}
-                    >
-                      <InstrumentIcon program={value} size={15} />
-                      <span>{programName(value, language)}</span>
-                    </button>
-                  </li>
-                ))}
-                {tones.map((item) => (
-                  <li key={item.id}>
-                    <button
-                      type="button"
-                      aria-pressed={tone?.id === item.id}
-                      onClick={() => {
-                        setProgram(toneProgram(item.family, program))
-                        setToneId(item.id)
-                        setSound(null)
-                      }}
-                    >
-                      <SlidersHorizontal size={15} aria-hidden className={styles.toneIcon} />
-                      <span>{toneLabel(item)}</span>
-                    </button>
-                  </li>
-                ))}
-                {presets.map((item) => (
-                  <li key={`${item.font}/${item.program}`}>
-                    <button
-                      type="button"
-                      title={item.font}
-                      aria-pressed={sameSound(sound, item)}
-                      onClick={() => {
-                        // Its samples carry their own sound, without a tone; the track takes a program of the
-                        // preset's kind (a distortion guitar for the electric guitars) unless it has one already.
-                        const at = presetPlace(item.font, item, item.kind)
-                        const kind = INSTRUMENT_CATEGORIES[at.category].subs[at.sub].programs
-                        if (!kind.includes(program)) setProgram(kind.includes(30) ? 30 : kind[0])
-                        setToneId(null)
-                        setSound({ font: item.font, program: item.program })
-                      }}
-                    >
-                      <AudioWaveform size={15} aria-hidden className={styles.toneIcon} />
-                      <span>{item.name}</span>
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            </section>
+              </li>
+            ))}
+            {!drums && programs.length === 0 && tones.length === 0 && presets.length === 0 && <li className={panel.hint}>{t('未找到相应乐器。')}</li>}
+            {!drums && programs.map((value) => (
+              <li key={value}>
+                <button
+                  type="button"
+                  aria-pressed={!tone && !sound && value === program}
+                  onClick={() => {
+                    setProgram(value)
+                    setToneId(null)
+                    setSound(null)
+                  }}
+                >
+                  <InstrumentIcon program={value} size={15} />
+                  <span>{programName(value, language)}</span>
+                </button>
+              </li>
+            ))}
+            {!drums && tones.map((item) => (
+              <li key={item.id}>
+                <button
+                  type="button"
+                  aria-pressed={tone?.id === item.id}
+                  onClick={() => {
+                    setProgram(toneProgram(item.family, program))
+                    setToneId(item.id)
+                    setSound(null)
+                  }}
+                >
+                  <SlidersHorizontal size={15} aria-hidden className={styles.toneIcon} />
+                  <span>{toneLabel(item)}</span>
+                </button>
+              </li>
+            ))}
+            {!drums && presets.map((item) => (
+              <li key={`${item.font}/${item.program}`}>
+                <button
+                  type="button"
+                  title={item.font}
+                  aria-pressed={sameSound(sound, item)}
+                  onClick={() => {
+                    // Its samples carry their own sound, without a tone; the track takes a program of the
+                    // preset's kind (a distortion guitar for the electric guitars) unless it has one already.
+                    const at = presetPlace(item.font, item, item.kind)
+                    const kind = INSTRUMENT_CATEGORIES[at.category].subs[at.sub].programs
+                    if (!kind.includes(program)) setProgram(kind.includes(30) ? 30 : kind[0])
+                    setToneId(null)
+                    setSound({ font: item.font, program: item.program })
+                  }}
+                >
+                  <AudioWaveform size={15} aria-hidden className={styles.toneIcon} />
+                  <span>{item.name}</span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        </section>
 
-            <section className={panel.section}>
-              <h3>{t('乐器选项')}</h3>
-              <div className={styles.row}>
-                <label className={styles.inline}>
-                  <span>{t('弦数')}</span>
-                  <select
-                    aria-label={t('弦数')}
-                    value={tuning.length}
-                    onChange={(event) => setTuning(resizeTuning(tuning, Number(event.target.value), bass))}
-                  >
-                    {Array.from({ length: MAX_STRINGS - MIN_STRINGS + 1 }, (_, offset) => MIN_STRINGS + offset).map((count) => (
-                      <option key={count} value={count}>
-                        {count}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label className={styles.inline}>
-                  <span>{t('调弦')}</span>
-                  <select
-                    aria-label={t('调弦')}
-                    value={preset ? preset.name : ''}
-                    onChange={(event) => {
-                      const chosen = tunings.find((item) => item.name === event.target.value)
-                      if (chosen) setTuning(chosen.tuning)
-                    }}
-                  >
-                    {!preset && <option value="">{t('自定义调弦')}</option>}
-                    {tunings.map((item) => (
-                      <option key={item.name} value={item.name}>
-                        {t(item.name)}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label className={styles.inline}>
-                  <span>{t('变调夹')}</span>
-                  <select aria-label={t('变调夹')} value={capo} onChange={(event) => setCapo(Number(event.target.value))}>
-                    {Array.from({ length: MAX_CAPO + 1 }, (_, fret) => fret).map((fret) => (
-                      <option key={fret} value={fret}>
-                        {fret === 0 ? t('无') : fret}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-              </div>
-              <div className={styles.strings}>
-                {tuning.map((pitch, string) => (
-                  <label key={string} className={styles.string}>
-                    <span>{string + 1}</span>
-                    <select
-                      aria-label={t('第 {n} 弦', { n: string + 1 })}
-                      value={pitch}
-                      onChange={(event) => setTuning(tuning.map((value, position) => (position === string ? Number(event.target.value) : value)))}
-                    >
-                      {PITCHES.map((value) => (
-                        <option key={value} value={value}>
-                          {pitchName(value)}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                ))}
-              </div>
-              <label className={panel.check}>
-                <input
-                  type="checkbox"
-                  checked={stringsChanged || adjust}
-                  disabled={!tuningChanged || stringsChanged}
-                  onChange={(event) => setAdjust(event.target.checked)}
-                />
-                {t('调整指法（保持音高，重新排品）')}
+        {!drums && (
+          <section className={panel.section}>
+            <h3>{t('乐器选项')}</h3>
+            <div className={styles.row}>
+              <label className={styles.inline}>
+                <span>{t('弦数')}</span>
+                <select
+                  aria-label={t('弦数')}
+                  value={tuning.length}
+                  onChange={(event) => setTuning(resizeTuning(tuning, Number(event.target.value), bass))}
+                >
+                  {Array.from({ length: MAX_STRINGS - MIN_STRINGS + 1 }, (_, offset) => MIN_STRINGS + offset).map((count) => (
+                    <option key={count} value={count}>
+                      {count}
+                    </option>
+                  ))}
+                </select>
               </label>
-              {tuningChanged && <p className={panel.hint}>{stringsChanged ? t('改变弦数时必须调整指法。') : t('不勾选时保留谱上的品位，音高随调弦改变。')}</p>}
-            </section>
-          </>
+              <label className={styles.inline}>
+                <span>{t('调弦')}</span>
+                <select
+                  aria-label={t('调弦')}
+                  value={preset ? preset.name : ''}
+                  onChange={(event) => {
+                    const chosen = tunings.find((item) => item.name === event.target.value)
+                    if (chosen) setTuning(chosen.tuning)
+                  }}
+                >
+                  {!preset && <option value="">{t('自定义调弦')}</option>}
+                  {tunings.map((item) => (
+                    <option key={item.name} value={item.name}>
+                      {t(item.name)}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className={styles.inline}>
+                <span>{t('变调夹')}</span>
+                <select aria-label={t('变调夹')} value={capo} onChange={(event) => setCapo(Number(event.target.value))}>
+                  {Array.from({ length: MAX_CAPO + 1 }, (_, fret) => fret).map((fret) => (
+                    <option key={fret} value={fret}>
+                      {fret === 0 ? t('无') : fret}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+            <div className={styles.strings}>
+              {tuning.map((pitch, string) => (
+                <label key={string} className={styles.string}>
+                  <span>{string + 1}</span>
+                  <select
+                    aria-label={t('第 {n} 弦', { n: string + 1 })}
+                    value={pitch}
+                    onChange={(event) => setTuning(tuning.map((value, position) => (position === string ? Number(event.target.value) : value)))}
+                  >
+                    {PITCHES.map((value) => (
+                      <option key={value} value={value}>
+                        {pitchName(value)}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              ))}
+            </div>
+            <label className={panel.check}>
+              <input
+                type="checkbox"
+                checked={stringsChanged || adjust}
+                disabled={!tuningChanged || stringsChanged}
+                onChange={(event) => setAdjust(event.target.checked)}
+              />
+              {t('调整指法（保持音高，重新排品）')}
+            </label>
+            {tuningChanged && <p className={panel.hint}>{stringsChanged ? t('改变弦数时必须调整指法。') : t('不勾选时保留谱上的品位，音高随调弦改变。')}</p>}
+          </section>
         )}
 
         {message && <p className={panel.message}>{message}</p>}
@@ -388,7 +457,7 @@ function EditorDialog({ index, current }: { index: number; current: TrackSetup }
             type="button"
             className={`${panel.secondary} ${styles.deleteTrack}`}
             disabled={editingTab || lastTrack || deleting}
-            title={editingTab ? t('编辑曲谱时不能删除音轨') : lastTrack ? t('只剩这一条音轨，不能删除') : undefined}
+            title={editingTab ? t('编辑曲谱时不能删除音轨') : lastTrack ? t('只剩唯一一条音轨，不能删除') : undefined}
             onClick={() => void removeTrack()}
           >
             <Trash2 size={16} aria-hidden />

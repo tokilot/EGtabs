@@ -2,8 +2,8 @@
 import * as alphaTab from '@coderline/alphatab'
 import { convertToScore, type SongInfo } from '../songs/convert.ts'
 import { BPM_MAX, BPM_MIN, DENOMINATORS, FreeMetronome, playCountIn, secondsPerBeat, type CountIn, type MetronomeSettings } from './clicks.ts'
-import { TabEditor, type EditorState, type Flag } from './tabEditor.ts'
-import { applyTrackEdits, indexAfterRemoval, keysAfterRemoval, trackSetup, withoutTrack, type TrackEdit, type TrackEdits, type TrackSetup } from './trackEdits.ts'
+import { TabEditor, type BeatClipboard, type EditorState, type Flag } from './tabEditor.ts'
+import { applyTrackEdits, indexAfterRemoval, keysAfterRemoval, trackSetup, withNewTrack, withoutTrack, type TrackEdit, type TrackEdits, type TrackSetup } from './trackEdits.ts'
 import { AmpSim } from '../../audio/ampSim.ts'
 import { claimSound, releaseSound } from '../../audio/soundOwner.ts'
 import { request } from '../../shared/http.ts'
@@ -12,6 +12,7 @@ import type { Tone, ToneFamily } from '../../audio/tone.ts'
 import { DEFAULT_TONE_LIBRARY, findTone, type ToneLibrary } from '../../tones/library.ts'
 import { beatSolfege, type NoteNames } from './solfege.ts'
 import { transposeScore } from './transpose.ts'
+import { repairDrumArticulations } from './drumArticulations.ts'
 import { cleanTrackSwitches, switchesAfterRemoval, switchesFromOld, trackForBar, withTrackSwitch, type TrackSwitches } from './trackSwitches.ts'
 import { cleanTrackSounds, trackPresets, type ExtraSoundFont, type SoundFontEntry, type TrackSound, type TrackSounds } from './trackSounds.ts'
 
@@ -110,6 +111,13 @@ export interface EditingState extends EditorState {
   /** Where to draw the cursor: the spot on the string, and the whole beat column. */
   noteBox: Box | null
   beatBox: Box | null
+  /** The selected beats, one box per row of the score. */
+  selectionBoxes: Box[]
+  /** Where the score shows the song's title and artist (drawn by alphaTab), to edit them in place; null when not shown. */
+  titleBox: Box | null
+  artistBox: Box | null
+  /** How many beats are copied, ready to paste (0: none). */
+  clipboard: number
 }
 
 export interface PlayerSnapshot {
@@ -503,7 +511,11 @@ export class PlayerController {
         const main = fonts.find((font) => font.main)
         if (main) chosen = `/api/soundfonts/${encodeURIComponent(main.name)}`
         // The presets added to the main set are offered per track from the start, like a loaded extra set's.
-        const added: ExtraSoundFont[] = main?.added ? [{ name: main.name, bank: main.added.bank, kind: 'gm', presets: main.added.presets, main: true }] : []
+        // The main set's own entry: the presets added to it, and its drum kits, both loaded with it.
+        const added: ExtraSoundFont[] =
+          main && (main.added || main.drums)
+            ? [{ name: main.name, bank: main.added?.bank ?? 0, kind: 'gm', presets: main.added?.presets ?? [], drums: main.drums, main: true }]
+            : []
         this.update({ soundFonts: fonts, extraSoundFonts: [...added, ...this.snapshot.extraSoundFonts.filter((font) => !font.main)] })
         // A song opened meanwhile picks its tracks' added presets at its program changes.
         if (added.length > 0 && Object.keys(this.snapshot.trackSounds).length > 0) {
@@ -544,7 +556,7 @@ export class PlayerController {
       const bytes = new Uint8Array(await response.arrayBuffer())
       if (this.api !== api) return
       // The routes go first: the synthesizer loads the samples of the programs they play when the set arrives.
-      this.update({ extraSoundFonts: [...this.snapshot.extraSoundFonts, { name, bank: font.bank, kind: font.kind, presets: font.presets }] })
+      this.update({ extraSoundFonts: [...this.snapshot.extraSoundFonts, { name, bank: font.bank, kind: font.kind, presets: font.presets, drums: font.drums }] })
       this.sendAmpRouting()
       api.loadSoundFont(bytes, true)
       // An open song picks its tracks' presets at its program changes.
@@ -560,6 +572,33 @@ export class PlayerController {
    * Plays a preset of a sample set on the instrument preview: the main set's by program (`added`: one of the presets
    * added to it), another's once loaded.
    */
+  /**
+   * Plays a short beat on a drum kit (2026-11-17), for picking one in "edit track": kick, snare and hi-hat for a
+   * bar, on the drum channel, the kit chosen by its program (null: the tab's own kit).
+   */
+  previewDrumKit(sound: TrackSound | null) {
+    const api = this.api
+    if (!api?.player || !this.snapshot.canPreview || api.playerState === alphaTab.synth.PlayerState.Playing) return
+    const { midi } = alphaTab
+    const file = new midi.MidiFile()
+    const channel = 9
+    const eighth = file.division / 2
+    file.addEvent(new midi.ProgramChangeEvent(0, 0, channel, sound?.drums ? sound.program : 0))
+    const hit = (tick: number, key: number, velocity = 100) => {
+      file.addEvent(new midi.NoteOnEvent(0, tick, channel, key, velocity))
+      file.addEvent(new midi.NoteOffEvent(0, tick + eighth - 1, channel, key, 0))
+    }
+    for (let step = 0; step < 8; step++) {
+      const tick = file.division + step * eighth
+      hit(tick, 42, step % 2 === 0 ? 90 : 70)
+      if (step === 0 || step === 3 || step === 4) hit(tick, 36, 110)
+      if (step === 2 || step === 6) hit(tick, 38, 110)
+    }
+    hit(file.division + 8 * eighth, 49, 110)
+    hit(file.division + 8 * eighth, 36, 110)
+    this.playOneTime(file)
+  }
+
   previewPreset(name: string, program: number, tuning: number[], added = false) {
     const font = this.snapshot.soundFonts.find((item) => item.name === name)
     if (!font) return
@@ -652,7 +691,7 @@ export class PlayerController {
       this.baseScore = null
       this.renderPending = false
       this.measuredSpacing = null
-      const unsupported = source.kind === 'file' ? '无法识别曲谱文件。' : '曲谱转换失败。'
+      const unsupported = source.kind === 'file' ? '无法识别曲谱文件格式。' : '在线曲谱导入失败。'
       this.update({ status: 'error', error: (error as Error).message || unsupported })
     }
   }
@@ -710,6 +749,8 @@ export class PlayerController {
   private onScoreLoaded(score: alphaTab.model.Score) {
     const api = this.api
     if (!api) return
+    // Drum notes of a tab saved before the exporter was patched played the wrong drums (drumArticulations.ts).
+    if (!this.swapping) repairDrumArticulations(score)
     this.applyStaffVisibility(score)
     if (this.swapping) {
       // Same song re-rendered: the practice setup stays; only names may have changed through a track edit.
@@ -912,6 +953,7 @@ export class PlayerController {
   toStart() {
     this.cancelCountIn()
     this.api?.stop()
+    this.lastSeek = { tick: 0, at: performance.now() }
   }
 
   setSpeed(speed: number) {
@@ -1044,6 +1086,33 @@ export class PlayerController {
    * The tab without one track, with the track edits baked in, as a Guitar Pro 7 file to save as the song's edited
    * tab; null when the track cannot go (the only one, or while the tab is being edited).
    */
+  /**
+   * The tab with a new, empty track at the end (2026-11-17), as a Guitar Pro 7 file to save as the song's edited
+   * tab; then addTrack() with the same score takes it in. Not while the tab is being edited, like deleting.
+   */
+  trackAdditionScore(name: string): alphaTab.model.Score | null {
+    const api = this.api
+    if (!api || !this.baseScore || this.snapshot.status !== 'ready' || this.snapshot.editing) return null
+    return withNewTrack(this.baseScore, api.settings, name)
+  }
+
+  trackAdditionFile(score: alphaTab.model.Score): Uint8Array | null {
+    return this.api ? new alphaTab.exporter.Gp7Exporter().export(score, this.api.settings) : null
+  }
+
+  /** Takes in the tab with its new track (trackAdditionScore), saved meanwhile; returns the new track's index. */
+  addTrack(score: alphaTab.model.Score): number {
+    const index = score.tracks.length - 1
+    const track = score.tracks[index]
+    this.originalScore = score
+    this.update({
+      tracks: [...this.snapshot.tracks, { index, name: track.name, isPercussion: false, program: track.playbackInfo.program, volume: 1, mute: false, solo: false }],
+      barCount: score.masterBars.length,
+    })
+    this.rerender(this.snapshot.transpose, {})
+    return index
+  }
+
   trackRemovalFile(index: number): Uint8Array | null {
     const api = this.api
     const left = this.scoreWithoutTrack(index)
@@ -1261,10 +1330,24 @@ export class PlayerController {
     if (this.snapshot.transpose !== 0) this.rerender(0, this.snapshot.trackEdits)
     this.editors.clear()
     this.midiStale = false
+    this.songInfoAtStart = { title: this.baseScore.title, artist: this.baseScore.artist }
+    // alphaTab's own clicks and drags (moving the play position, selecting a loop range) are off while editing:
+    // they would fight the editor's cursor and selection. It reads this setting at every event.
+    api.settings.player.enableUserInteraction = false
     // A placeholder so the getter knows editing is on; publishEditing fills it in.
     this.editSelected = false
     this.update({ editing: { editable: false, selected: false, noteBox: null, beatBox: null } as unknown as EditingState })
     this.publishEditing(true)
+  }
+
+  private songInfoAtStart: { title: string; artist: string } | null = null
+
+  /** The title and artist as edited, when they were changed in the editor since it opened; else null. */
+  editedSongInfo(): { title: string; artist: string } | null {
+    const score = this.baseScore
+    const start = this.songInfoAtStart
+    if (!score || !start || (score.title === start.title && score.artist === start.artist)) return null
+    return { title: score.title, artist: score.artist }
   }
 
   /** True when anything was changed since editing started (or was last saved). */
@@ -1295,9 +1378,13 @@ export class PlayerController {
           // back to where editing started
         }
       }
-      if (this.editors.size > 0) this.renderEdited()
+      if (this.editors.size > 0) {
+        this.renderEdited()
+        for (const editor of this.editors.values()) this.refreshSongInfo(editor.score)
+      }
     }
     const trackEdits = saved ? {} : this.snapshot.trackEdits
+    api.settings.player.enableUserInteraction = true
     this.editors.clear()
     this.update({ editing: null, trackEdits })
     if (this.transposeBeforeEditing !== 0) {
@@ -1320,6 +1407,7 @@ export class PlayerController {
   private dropEditing() {
     this.editors.clear()
     this.midiStale = false
+    if (this.api) this.api.settings.player.enableUserInteraction = true
     if (this.snapshot.editing) this.update({ editing: null })
   }
 
@@ -1342,8 +1430,53 @@ export class PlayerController {
       this.renderEdited()
       // An undone track edit brings back the old name and instrument.
       this.refreshTrackNames(editor.score)
+      this.refreshSongInfo(editor.score)
     }
     this.publishEditing(!changed)
+  }
+
+  /**
+   * Changes the song's title or artist while editing (the top bar's fields, 2026-11-17): one step of the shown
+   * track's editor history, whether or not a spot on the score was picked.
+   */
+  setSongInfo(changes: { title?: string; artist?: string }) {
+    const editor = this.editor
+    if (!editor || !this.snapshot.editing) return
+    const revision = editor.revision
+    editor.setSongInfo(changes)
+    if (editor.revision === revision) return
+    this.refreshSongInfo(editor.score)
+    // alphaTab draws the title and artist on the score: draw it again.
+    this.renderEdited()
+    this.publishEditing(false)
+  }
+
+  /** The title and artist the top bar shows follow the tab as edited (and undone). */
+  private refreshSongInfo(score: alphaTab.model.Score) {
+    if (score.title !== this.snapshot.title || score.artist !== this.snapshot.artist) this.update({ title: score.title, artist: score.artist })
+  }
+
+  // Beats copied in the tab editor (2026-11-16), from any track, for pasting into any track.
+  private clipboard: BeatClipboard | null = null
+
+  /** Copies the selected beats (or the cursor beat) of the track being edited. */
+  copyBeats(): number {
+    const editor = this.editor
+    if (!editor || !this.snapshot.editing || !this.editSelected) return 0
+    this.clipboard = editor.copy()
+    this.update({ editing: { ...this.snapshot.editing, clipboard: this.clipboard.beats.length } })
+    return this.clipboard.beats.length
+  }
+
+  /** Pastes the copied beats at the cursor of the track being edited; null when there was nothing to paste. */
+  pasteBeats(): { droppedNotes: number; cutBeats: number } | null {
+    const clipboard = this.clipboard
+    if (!clipboard || !this.editor?.editable) return null
+    let result: { droppedNotes: number; cutBeats: number } | null = null
+    this.edit((editor) => {
+      result = editor.paste(clipboard)
+    })
+    return result
   }
 
   // A track edit while editing the tab: applied to the tab as it stands, as one step of that track's editor.
@@ -1385,7 +1518,7 @@ export class PlayerController {
   }
 
   /** Puts the edit cursor where the score was clicked: the beat under the pointer and the nearest string. */
-  editClickAt(clientX: number, clientY: number) {
+  editClickAt(clientX: number, clientY: number, extend = false) {
     const api = this.api
     const editor = this.editor
     const host = this.host
@@ -1407,9 +1540,25 @@ export class PlayerController {
       const lines = this.stringLines(bounds.barBounds, editor)
       string = Math.round((lines.lowest - y) / lines.spacing) + 1
     }
-    editor.moveTo({ bar: beat.voice.bar.index, beat: beat.index, string })
+    editor.moveTo({ bar: beat.voice.bar.index, beat: beat.index, string }, extend && this.editSelected)
     this.editSelected = true
     this.publishEditing(true)
+  }
+
+  /**
+   * Dragging over the score with the button held (2026-11-17): the selection runs from the beat the press started
+   * on to the beat under the pointer, across bars, either way. Nothing happens while the pointer stays on one beat.
+   */
+  editDragTo(clientX: number, clientY: number) {
+    const editor = this.editor
+    if (!editor || !this.editSelected) return
+    const before = editor.cursor
+    this.editClickAt(clientX, clientY, true)
+    const after = editor.cursor
+    if (after.bar === before.bar && after.beat === before.beat) return
+    // The string stays where the press was: a drag selects beats, it does not move along the strings.
+    editor.moveTo({ string: before.string }, true)
+    this.publishEditing(false)
   }
 
   // ---- tones (the library, and the tones given to tracks) ----
@@ -1621,8 +1770,69 @@ export class PlayerController {
     }
     this.showNoteNames(editor.beat)
     const boxes = this.editSelected ? this.measureCursor(editor) : { noteBox: null, beatBox: null }
-    this.update({ editing: { ...editor.state(), editable: editor.editable, selected: this.editSelected, ...boxes } })
+    const selectionBoxes = this.editSelected ? this.measureSelection(editor) : []
+    const header = this.measureHeader(editor.score)
+    this.update({
+      editing: { ...editor.state(), editable: editor.editable, selected: this.editSelected, ...boxes, selectionBoxes, ...header, clipboard: this.clipboard?.beats.length ?? 0 },
+    })
+    // The page may not show the new drawing yet: look again once it does.
+    if (!header.titleBox && editor.score.title) this.remeasureHeaderSoon()
     if (scroll && boxes.beatBox) this.revealBox(boxes.beatBox)
+  }
+
+  // The song's title and artist as alphaTab drew them at the top of the score (its text elements, matched by their
+  // words), in the score's coordinates like the other boxes.
+  private measureHeader(score: alphaTab.model.Score): { titleBox: Box | null; artistBox: Box | null } {
+    const host = this.host
+    if (!host) return { titleBox: null, artistBox: null }
+    const origin = host.getBoundingClientRect()
+    const find = (words: string): Box | null => {
+      const wanted = words.trim()
+      if (!wanted) return null
+      for (const text of host.querySelectorAll('svg text')) {
+        if (text.textContent?.trim() !== wanted) continue
+        const rect = text.getBoundingClientRect()
+        if (rect.width === 0) continue
+        return { x: rect.left - origin.left, y: rect.top - origin.top, w: rect.width, h: rect.height }
+      }
+      return null
+    }
+    const titleBox = find(score.title)
+    // No artist yet, so none drawn: a place for one just under the title, where alphaTab writes it.
+    const artistBox = find(score.artist) ?? (titleBox && !score.artist.trim() ? { x: titleBox.x + titleBox.w / 2 - 80, y: titleBox.y + titleBox.h + 2, w: 160, h: Math.round(titleBox.h * 0.6) } : null)
+    return { titleBox, artistBox }
+  }
+
+  private headerRetry: number | null = null
+
+  private remeasureHeaderSoon() {
+    if (this.headerRetry !== null) return
+    this.headerRetry = window.setTimeout(() => {
+      this.headerRetry = null
+      const editor = this.editor
+      if (!editor || !this.snapshot.editing) return
+      const header = this.measureHeader(editor.score)
+      const now = this.snapshot.editing
+      if (JSON.stringify([header.titleBox, header.artistBox]) !== JSON.stringify([now.titleBox, now.artistBox])) this.update({ editing: { ...now, ...header } })
+    }, 300)
+  }
+
+  // The selected beats as boxes, one per row of the score they run across.
+  private measureSelection(editor: TabEditor): Box[] {
+    const lookup = this.api?.boundsLookup
+    if (!lookup || !editor.state().selection) return []
+    const boxes: Box[] = []
+    for (const beat of editor.selectedBeats()) {
+      const bounds = lookup.findBeat(beat)
+      if (!bounds) continue
+      const { lowest, spacing } = this.stringLines(bounds.barBounds, editor)
+      const top = lowest - (editor.stringCount - 1) * spacing - spacing * 0.8
+      const box = { x: bounds.realBounds.x, y: top, w: bounds.realBounds.w, h: lowest - top + spacing * 0.8 }
+      const last = boxes[boxes.length - 1]
+      if (last && Math.abs(last.y - box.y) < 1 && box.x >= last.x - 1) last.w = box.x + box.w - last.x
+      else boxes.push(box)
+    }
+    return boxes
   }
 
   private measureCursor(editor: TabEditor): { noteBox: Box | null; beatBox: Box | null } {
@@ -1720,17 +1930,24 @@ export class PlayerController {
     return this.api?.tickPosition ?? 0
   }
 
+  // The synthesizer reports a new position a moment after it is set: quick key presses start from the bar asked for
+  // last, not from the old position still reported (two presses moved one bar, 2026-11-12).
+  private lastSeek: { tick: number; at: number } | null = null
+
   /** Moves the cursor by whole bars, following the order the bars are played in (repeats unrolled). */
   seekBars(delta: number) {
     const api = this.api
     const bars = api?.tickCache?.masterBars
     if (!api || !bars || bars.length === 0) return
-    const tick = api.tickPosition
+    const pending = this.lastSeek && performance.now() - this.lastSeek.at < 600 ? this.lastSeek.tick : null
+    const tick = pending ?? api.tickPosition
     let current = bars.findIndex((bar) => tick >= bar.start && tick < bar.end)
     if (current < 0) current = tick >= bars[bars.length - 1].end ? bars.length - 1 : 0
     // Going back from the middle of a bar first returns to its start.
     const target = delta < 0 && tick > bars[current].start + 30 ? current + delta + 1 : current + delta
-    api.tickPosition = bars[clamp(target, 0, bars.length - 1)].start
+    const start = bars[clamp(target, 0, bars.length - 1)].start
+    api.tickPosition = start
+    this.lastSeek = { tick: start, at: performance.now() }
   }
 
   setZoom(zoom: number) {

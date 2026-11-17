@@ -1,4 +1,7 @@
-import { Headphones, Pencil, Volume2, VolumeX } from 'lucide-react'
+import { Headphones, Pencil, Plus, Volume2, VolumeX } from 'lucide-react'
+import { useState } from 'react'
+import * as api from '../api.ts'
+import { useSong } from '../library/useSong.ts'
 import { sortByName } from '../../shared/alphabetical.ts'
 import { useLanguage } from '../../shared/ui/i18n.ts'
 import { programName } from './gmPrograms.ts'
@@ -14,7 +17,28 @@ import styles from './TrackList.module.css'
 export function TrackList() {
   const { state, player } = usePlayer()
   const { t, language } = useLanguage()
+  const { song, replace, libraryChanged } = useSong()
+  const [adding, setAdding] = useState(false)
   if (state.tracks.length === 0) return <p className={styles.empty}>{t('未打开任何曲谱。')}</p>
+
+  // A new empty track at the end (2026-11-17), saved at once as the song's edited tab, like deleting one; the
+  // track editor opens on it to pick its instrument and tuning.
+  const addTrack = async () => {
+    const score = player.trackAdditionScore(t('新音轨'))
+    const bytes = score && player.trackAdditionFile(score)
+    if (!song || !score || !bytes) return
+    setAdding(true)
+    try {
+      replace(await api.saveEditedSong(song.id, bytes))
+      const index = player.addTrack(score)
+      libraryChanged()
+      openTrackEditor(index)
+    } catch (cause) {
+      window.alert(t('保存失败：{message}', { message: (cause as Error).message }))
+    } finally {
+      setAdding(false)
+    }
+  }
   const sounding = new Set(state.sounding)
 
   return (
@@ -44,7 +68,6 @@ export function TrackList() {
               <span
                 className={styles.dot}
                 data-sounding={isSounding || undefined}
-                title={isSounding ? t('正在发声') : undefined}
                 aria-label={isSounding ? t('正在发声') : undefined}
               />
               <button
@@ -90,7 +113,6 @@ export function TrackList() {
                 type="button"
                 className={styles.toggle}
                 aria-label={t('编辑 {name}', { name: track.name })}
-                aria-pressed={state.trackEdits[track.index] ? true : undefined}
                 title={t('编辑音轨')}
                 onClick={() => openTrackEditor(track.index)}
               >
@@ -100,6 +122,16 @@ export function TrackList() {
           )
         })}
       </ul>
+      <button
+        type="button"
+        className={styles.addTrack}
+        disabled={adding || !song || state.status !== 'ready' || state.editing !== null}
+        title={state.editing ? t('编辑曲谱时不能新建音轨') : t('新建音轨')}
+        onClick={() => void addTrack()}
+      >
+        <Plus size={15} aria-hidden />
+        {t('新建音轨')}
+      </button>
     </div>
   )
 }

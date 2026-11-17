@@ -50,6 +50,32 @@ describe('track sounds', () => {
     expect(Object.keys(plan.routing[1])).toHaveLength(128)
     expect(plan.routing[2]).toBeUndefined()
   })
+
+  it('gives a drum track a drum kit of a loaded set, routing only the program the tab asks for', () => {
+    const fonts: ExtraSoundFont[] = [
+      { name: 'Main.sf2', bank: 1000, kind: 'gm', presets: [], main: true, drums: [{ program: 25, name: '808' }] },
+      { name: 'MetalDrums.sf2', bank: 1025, kind: 'extra', presets: [], drums: [{ program: 3, name: 'Drumkit' }] },
+    ]
+    const tracks = [
+      { index: 0, channels: [9, 9], isPercussion: true },
+      { index: 1, channels: [0, 1], isPercussion: false },
+    ]
+    const presets = trackPresets(fonts, { 0: { font: 'MetalDrums.sf2', program: 3, drums: true }, 1: { font: 'MetalDrums.sf2', program: 3, drums: true } })
+    expect(presets[0]).toEqual({ bank: 128, program: 3, drums: true })
+    const plan = planAmpBuses(tracks, {}, () => null, null, presets)
+    expect(plan.buses).toEqual([])
+    // The drums ask for program 0; other programs (a preview of another kit) are left alone.
+    expect(plan.routing[9]).toEqual({ 0: [0, 3, 128] })
+    // A kit is no instrument for a melodic track.
+    expect(plan.routing[0]).toBeUndefined()
+    expect(findPreset(fonts, { font: 'Main.sf2', program: 25, drums: true })?.name).toBe('808')
+    expect(findPreset(fonts, { font: 'Main.sf2', program: 99, drums: true })).toBeNull()
+    expect(cleanTrackSounds({ 0: { font: 'MetalDrums.sf2', program: 3, drums: true } })).toEqual({ 0: { font: 'MetalDrums.sf2', program: 3, drums: true } })
+    // The first version kept the main set's kits under "#drums".
+    const old = cleanTrackSounds({ 0: { font: '#drums', program: 25 } })
+    expect(old).toEqual({ 0: { font: '#drums', program: 25, drums: true } })
+    expect(trackPresets(fonts, old)[0]).toEqual({ bank: 128, program: 25, drums: true })
+  })
 })
 
 describe('where extra presets go in the picker', () => {

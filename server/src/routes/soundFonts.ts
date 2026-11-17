@@ -13,8 +13,11 @@ export function soundFontRoutes(app: Hono, soundFonts: SoundFonts) {
     const file = soundFonts.file(name)
     if (!file) return c.json({ error: 'No such sound font.' }, 404)
     const info = await stat(file)
-    const bank = soundFonts.list().find((font) => font.name === name)?.bank
-    const etag = `"${info.size.toString(36)}-${Math.floor(info.mtimeMs).toString(36)}${bank === undefined ? '' : `-b${bank}`}"`
+    const listed = soundFonts.list().find((font) => font.name === name)
+    const bank = listed?.bank
+    // The programs its drum kits are moved to change the bytes too.
+    const kits = listed && !listed.main && listed.drums ? `-d${listed.drums.map((kit) => kit.program).join('.')}` : ''
+    const etag = `"${info.size.toString(36)}-${Math.floor(info.mtimeMs).toString(36)}${bank === undefined ? '' : `-b${bank}`}${kits}"`
     const headers = { ETag: etag, 'Cache-Control': 'no-cache' }
     if (c.req.header('If-None-Match') === etag) return c.body(null, 304, headers)
     const served = soundFonts.bytes(name)
