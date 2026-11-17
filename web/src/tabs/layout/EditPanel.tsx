@@ -5,18 +5,27 @@ import { useSong } from '../library/useSong.ts'
 import { useTabEditing } from '../library/useTabEditing.ts'
 import type { Box } from '../player/controller.ts'
 import { CHORD_QUALITIES, CHORD_ROOTS, chordName, parseChord } from '../player/chords.ts'
+import { DRUM_PALETTE, drumPieceById } from '../player/drumPieces.ts'
 import { DURATIONS, MAX_FRET, TREMOLO_MARKS, TUPLETS, type BeatFlag, type BendKind, type GraceKind, type NoteFlag, type SlideKind, type StrokeKind, type TabEditor, type WhammyKind } from '../player/tabEditor.ts'
 import { usePlayer } from '../player/usePlayer.ts'
 import { useLanguage, type Translate } from '../../shared/ui/i18n.ts'
 import styles from './EditPanel.module.css'
 import { pasteBeats } from './shortcuts.ts'
 
-type Tab = 'note' | 'rhythm' | 'effects' | 'dynamics' | 'bar' | 'text'
+type Tab = 'note' | 'drum' | 'rhythm' | 'effects' | 'dynamics' | 'bar' | 'text'
 
 const TABS: Array<{ id: Tab; label: string }> = [
   { id: 'note', label: '音符' },
   { id: 'rhythm', label: '节奏' },
   { id: 'effects', label: '效果' },
+  { id: 'dynamics', label: '力度' },
+  { id: 'bar', label: '小节' },
+  { id: 'text', label: '文字' },
+]
+// A drum track (2026-11-17): its pieces and drum techniques take the place of the note and effects pages.
+const DRUM_TABS: Array<{ id: Tab; label: string }> = [
+  { id: 'drum', label: '鼓件' },
+  { id: 'rhythm', label: '节奏' },
   { id: 'dynamics', label: '力度' },
   { id: 'bar', label: '小节' },
   { id: 'text', label: '文字' },
@@ -106,23 +115,33 @@ function PanelContent({ run }: { run: (command: (editor: TabEditor) => void) => 
   const { song } = useSong()
   const editing = useTabEditing()
   const { t } = useLanguage()
-  const [tab, setTab] = useState('note' as Tab)
+  const [chosen, setTab] = useState('note' as Tab)
   const edit = state.editing!
+  const drum = edit.drum
 
   const fill = edit.barFill === 'full' ? null : edit.barFill === 'short' ? t('小节时值不足') : t('小节时值超出')
+  const tabs = drum ? DRUM_TABS : TABS
+  // The first page stands for the other kind's first page (notes on a guitar, pieces on drums).
+  const tab = tabs.some((item) => item.id === chosen) ? chosen : tabs[0].id
 
   return (
     <>
       <header className={styles.header}>
         <span className={styles.position}>
-          {t('第 {bar} 小节 · 第 {beat}/{beats} 拍 · 第 {string} 弦', {
-            bar: edit.cursor.bar + 1,
-            beat: edit.cursor.beat + 1,
-            beats: edit.beatCount,
-            // Strings are numbered for the player from the thinnest (1) down.
-            string: edit.stringCount - edit.cursor.string + 1,
-          })}
-          {edit.note && <strong className={styles.fret}>{t('品位 {fret}', { fret: edit.note.fret })}</strong>}
+          {drum
+            ? t('第 {bar} 小节 · 第 {beat}/{beats} 拍', { bar: edit.cursor.bar + 1, beat: edit.cursor.beat + 1, beats: edit.beatCount })
+            : t('第 {bar} 小节 · 第 {beat}/{beats} 拍 · 第 {string} 弦', {
+                bar: edit.cursor.bar + 1,
+                beat: edit.cursor.beat + 1,
+                beats: edit.beatCount,
+                // Strings are numbered for the player from the thinnest (1) down.
+                string: edit.stringCount - edit.cursor.string + 1,
+              })}
+          {drum ? (
+            drum.current !== null && <strong className={styles.fret}>{t(drum.pieces.find((item) => item.id === drum.current)?.name ?? '')}</strong>
+          ) : (
+            edit.note && <strong className={styles.fret}>{t('品位 {fret}', { fret: edit.note.fret })}</strong>
+          )}
           {fill && <span className={styles.warning}>{fill}</span>}
         </span>
         <span className={styles.spacer} />
@@ -146,11 +165,11 @@ function PanelContent({ run }: { run: (command: (editor: TabEditor) => void) => 
       </header>
 
       {!edit.editable ? (
-        <p className={styles.hint}>{t('当前音轨为鼓轨，不支持编辑。')}</p>
+        <p className={styles.hint}>{t('当前音轨没有弦，不支持编辑。')}</p>
       ) : (
         <>
           <nav className={styles.tabs} role="tablist">
-            {TABS.map((item) => (
+            {tabs.map((item) => (
               <button key={item.id} type="button" role="tab" aria-selected={tab === item.id} onMouseDown={(event) => event.preventDefault()} onClick={() => setTab(item.id)}>
                 {t(item.label)}
               </button>
@@ -158,6 +177,7 @@ function PanelContent({ run }: { run: (command: (editor: TabEditor) => void) => 
           </nav>
           <div className={styles.body}>
             {tab === 'note' && <NoteTab run={run} t={t} />}
+            {tab === 'drum' && <DrumTab run={run} t={t} />}
             {tab === 'rhythm' && <RhythmTab run={run} t={t} />}
             {tab === 'effects' && <EffectsTab run={run} t={t} />}
             {tab === 'dynamics' && <DynamicsTab run={run} t={t} />}
@@ -278,6 +298,69 @@ function NoteTab({ run, t }: TabProps) {
           max={24}
           onCommit={(value) => run((editor) => editor.setTrill(value))}
         />
+      </Row>
+    </>
+  )
+}
+
+/**
+ * A drum kit's pieces in three rows (drums, hi-hat, cymbals): a click puts the piece on the beat or takes it off,
+ * the most used have a digit key. Pieces the beat has from outside the kit come after, to take off. Then what the
+ * note the cursor is on (up and down pick one) or the beat can have: ghost note, accent, roll, fermata.
+ */
+function DrumTab({ run, t }: TabProps) {
+  const edit = usePlayer().state.editing!
+  const drum = edit.drum!
+  const note = edit.note
+  const beat = edit.beat
+  const has = new Set(drum.pieces.map((item) => item.id))
+  const inKit = new Set(DRUM_PALETTE.flatMap((row) => row.pieces.map((item) => item.id)))
+  const others = drum.pieces.filter((item) => !inKit.has(item.id))
+  const piece = (id: number, name: string, key?: string) => (
+    <Button key={id} label={t(name)} shortcut={key} pressed={has.has(id)} onClick={() => run((editor) => editor.toggleDrumPiece(id))}>
+      {key && <span className={styles.key}>{key}</span>} {t(name)}
+    </Button>
+  )
+  return (
+    <>
+      {DRUM_PALETTE.map((row) => (
+        <Row key={row.group} label={t(row.group)}>
+          {row.pieces.map((item) => piece(item.id, drumPieceById(item.id)?.name ?? '', item.key))}
+        </Row>
+      ))}
+      {others.length > 0 && <Row label={t('其他')}>{others.map((item) => piece(item.id, item.name))}</Row>}
+      {note && (
+        <>
+          <Row label={t('音符')}>
+            <Button label={t('删除音')} shortcut="Delete" onClick={() => run((editor) => editor.removeNote())}>
+              <Trash2 size={14} /> {t('删除音')}
+            </Button>
+            <Button label={t('幽灵音')} shortcut="G" pressed={note.flags.ghost} onClick={() => run((editor) => editor.toggle('ghost'))}>
+              {t('幽灵音')}
+            </Button>
+          </Row>
+          <Choice
+            label={t('重音')}
+            value={note.accent}
+            options={[
+              [model.AccentuationType.None, t('无')],
+              [model.AccentuationType.Normal, t('重音')],
+              [model.AccentuationType.Heavy, t('强重音')],
+            ]}
+            onPick={(value) => run((editor) => editor.setAccent(value))}
+          />
+        </>
+      )}
+      <Choice
+        label={t('滚奏')}
+        value={beat.tremolo ?? 0}
+        options={[[0, t('无')] as [number, string], ...TREMOLO_MARKS.map((marks) => [marks, t('{n} 道斜线', { n: marks })] as [number, string])]}
+        onPick={(value) => run((editor) => editor.setTremolo(value || null))}
+      />
+      <Row label={t('整拍')}>
+        <Button label={t('延长记号')} pressed={beat.flags.fermata} onClick={() => run((editor) => editor.toggle('fermata'))}>
+          {t('延长记号')}
+        </Button>
       </Row>
     </>
   )
@@ -534,15 +617,19 @@ function BarTab({ run, t }: TabProps) {
 }
 
 function TextTab({ run, t }: TabProps) {
-  const beat = usePlayer().state.editing!.beat
+  const edit = usePlayer().state.editing!
+  const beat = edit.beat
   return (
     <>
       <Row label={t('歌词')}>
         <TextField label={t('拍下的歌词')} value={beat.lyrics} placeholder={t('拍下的歌词')} onCommit={(value) => run((editor) => editor.setLyrics(value))} />
       </Row>
-      <Row label={t('和弦')}>
-        <ChordPicker value={beat.chord} t={t} onPick={(name) => run((editor) => editor.setChord(name))} />
-      </Row>
+      {/* Chords are a guitar's. */}
+      {!edit.drum && (
+        <Row label={t('和弦')}>
+          <ChordPicker value={beat.chord} t={t} onPick={(name) => run((editor) => editor.setChord(name))} />
+        </Row>
+      )}
     </>
   )
 }

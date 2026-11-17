@@ -145,8 +145,15 @@ export function useShortcuts() {
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (isTyping(event.target)) return
-      if (player.getSnapshot().editing) {
+      const snapshot = player.getSnapshot()
+      // While the tab plays, the editor rests (2026-11-17): the keys are the player's, saving aside.
+      if (snapshot.editing && !snapshot.playing) {
         if (editKey(event, player)) event.preventDefault()
+        return
+      }
+      if (snapshot.editing && (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') {
+        event.preventDefault()
+        window.dispatchEvent(new Event(SAVE_EDITS_EVENT))
         return
       }
       if (event.ctrlKey || event.metaKey || event.altKey) return

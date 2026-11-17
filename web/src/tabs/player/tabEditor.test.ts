@@ -145,7 +145,9 @@ describe.skipIf(!available)('TabEditor', () => {
     expect(editor.state().beat.isRest).toBe(true)
     editor.moveTo({ bar: 10_000 })
     expect(editor.cursor.bar).toBe(score.masterBars.length - 1)
-    expect(new TabEditor(score, score.tracks.findIndex((track) => track.isPercussion), new Settings()).editable).toBe(false)
+    // Drum tracks are edited too (2026-11-17), on the lines of their staff: see drumEditing.test.ts.
+    const drums = new TabEditor(score, score.tracks.findIndex((track) => track.isPercussion), new Settings())
+    expect([drums.editable, drums.drums]).toEqual([true, true])
   })
 
   it('survives the save as Guitar Pro and opening it again', () => {

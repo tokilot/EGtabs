@@ -17,11 +17,17 @@ kept on your own computer, and the backend only listens on `127.0.0.1`. The inte
   the site in question regarding copyright.
 - MIDI files are turned into tablature on import: the rhythm is quantized, a tuning is picked, and strings and frets
   are chosen so the hand moves as little as possible.
-- Edit notes directly on the tab, with undo; select beats by dragging, Shift + arrows or Shift-click, and copy them to the same or another track; while editing, change the title and artist right on the score; edit tracks, and give a drum track another drum kit.
+- Edit notes directly on the tab, with undo; select beats by dragging, Shift + arrows or Shift-click, and copy them to the same or another track (not between guitar and drum tracks); while editing, change the title and artist right on the score; edit tracks, and give a drum track another drum kit.
+- Drum tracks can be edited too: the panel groups the pieces as drums, hi-hat and cymbals; a click puts a piece on the beat
+  or takes it off, the most used have a digit key (1 kick, 2 snare, 3 closed hi-hat…), and up and down pick one of the
+  beat's notes. "New track" in the mixer adds a guitar or a drum track.
+- Play at any time while editing, to hear the changes: while it plays a click on the score moves the play position and a
+  drag picks a loop range; once stopped, the edit cursor is on the beat playback stopped at.
 
 **Practice**
 - Practice mode: practice speed, count-in, looped bars, metronome, automatic track switches.
-- Favourites: keep the songs you like.
+- Favourites: keep the songs you like. "My tabs" sorts newest first, oldest first (by when the tab was last changed, or
+  else added to the library) or by first letter.
 - Playlists: when a song ends, the next one starts.
 
 **Tones**

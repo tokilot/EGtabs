@@ -24,6 +24,8 @@ export interface Song<Settings = SongSettings> {
   settings: Settings
   createdAt: string
   lastOpenedAt: string | null
+  /** When the tab itself last changed (saved from the editor, put back as imported, another revision); null: never. */
+  modifiedAt: string | null
 }
 
 /** A playlist: a named group of favourite songs, in the order they are played. */

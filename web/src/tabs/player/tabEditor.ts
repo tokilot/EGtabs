@@ -16,6 +16,7 @@ import {
   snapshotStructure,
   snapshotTrack,
 } from './modelClone.ts'
+import { articulationFor, drumPieceById, KIT_LINES, noteArticulation, paletteKey } from './drumPieces.ts'
 
 export const MAX_FRET = 24
 /** Two digits typed this close together form one fret number ("1", "2" -> 12). */
@@ -25,7 +26,10 @@ const TICKS_PER_WHOLE = 3840
 export interface EditCursor {
   bar: number
   beat: number
-  /** alphaTab numbering: 1 is the lowest string. */
+  /**
+   * alphaTab numbering: 1 is the lowest string. On a drum track, the staff line instead (half steps down from the
+   * top line of the five: 3 is the snare's space; see drumPieces.ts), which picks one of the beat's notes.
+   */
   string: number
 }
 
@@ -35,6 +39,8 @@ export type BeatFlag = 'palmMute' | 'letRing' | 'tap' | 'slap' | 'pop' | 'fermat
 export type Flag = NoteFlag | BeatFlag
 
 const BEAT_FLAGS = new Set<Flag>(['palmMute', 'letRing', 'tap', 'slap', 'pop', 'fermata', 'deadSlapped'])
+/** What a drum note or beat can have of the techniques (accents are set apart). */
+const DRUM_FLAGS = new Set<Flag>(['ghost', 'fermata'])
 
 export type SlideKind = 'none' | 'legato' | 'shift' | 'inBelow' | 'inAbove' | 'outDown' | 'outUp'
 export type BendKind = 'none' | 'half' | 'full' | 'oneAndHalf' | 'bendRelease' | 'preBend' | 'preBendRelease' | 'custom'
@@ -138,13 +144,26 @@ export interface EditorState {
   /** The song's title and artist, as written in the tab. */
   songTitle: string
   songArtist: string
+  /** On a drum track: the pieces the cursor beat plays; null on other tracks. */
+  drum: DrumState | null
 }
 
-/** Beats copied from a track (2026-11-16), to be pasted into it or another one. */
+export interface DrumState {
+  /** The pieces of the cursor beat (by id), top of the staff first. */
+  pieces: Array<{ id: number; name: string }>
+  /** The piece of the note the cursor is on (its id), or null when the beat is a rest. */
+  current: number | null
+}
+
+/** Beats copied from a track (2026-11-16), to be pasted into it or another one of the same kind. */
 export interface BeatClipboard {
   beats: model.Beat[]
   /** The source track's string count: strings are kept by their number from the highest. */
   strings: number
+  /** Copied from a drum track: pastes only into drum tracks, and guitar beats only into tracks with strings. */
+  drums: boolean
+  /** The drum track's own list of pieces, which its notes may point into. */
+  articulations: model.InstrumentArticulation[]
 }
 
 interface Operation {
@@ -173,8 +192,11 @@ export class TabEditor {
     this.trackIndex = trackIndex
     this.settings = settings
     const bar = clampInt(start?.bar ?? 0, 0, score.masterBars.length - 1)
-    this.cursor = { bar, beat: 0, string: this.stringCount }
-    this.cursor = { bar, beat: clampInt(start?.beat ?? 0, 0, this.voice(bar).beats.length - 1), string: clampInt(start?.string ?? this.stringCount, 1, this.stringCount) }
+    // A drum track starts on the snare's line (or the beat's note nearest to it).
+    const string = start?.string ?? (this.drums ? 3 : this.stringCount)
+    const beat = clampInt(start?.beat ?? 0, 0, this.voice(bar).beats.length - 1)
+    this.cursor = { bar, beat, string: 1 }
+    this.cursor = { bar, beat, string: this.fitString(string, this.voice(bar).beats[beat]) }
   }
 
   /** Goes up with every change to the tab, including undo and redo; cursor moves leave it alone. */
@@ -190,9 +212,64 @@ export class TabEditor {
     return Math.max(1, this.staff.tuning.length)
   }
 
-  /** Percussion is not edited: its "frets" are drum sounds and its lines are not strings. */
+  /** Tracks with strings, and drum tracks (2026-11-17); a track with neither (a piano part) is not edited. */
   get editable(): boolean {
-    return !this.staff.isPercussion && this.staff.tuning.length > 0
+    return this.drums || this.staff.tuning.length > 0
+  }
+
+  /** A drum track: its notes are drum pieces on the lines of the staff, and the cursor moves along those lines. */
+  get drums(): boolean {
+    return this.staff.isPercussion
+  }
+
+  private get track(): model.Track {
+    return this.score.tracks[this.trackIndex]
+  }
+
+  /** The staff line a drum note is drawn on, or null when its piece is unknown. */
+  private lineOf(note: model.Note): number | null {
+    return noteArticulation(this.track, note.percussionArticulation)?.line ?? null
+  }
+
+  private linesCache: { revision: number; lines: number[] } | null = null
+
+  /**
+   * The lines of a drum track's staff in use, top first: those of a drum kit (china over the staff down to the
+   * pedal hi-hat under it) and any other line a note of the track is on. The edit cursor's box spans them.
+   */
+  drumLines(): number[] {
+    if (this.linesCache?.revision === this.edits) return this.linesCache.lines
+    const lines = new Set<number>()
+    for (let line = KIT_LINES.top; line <= KIT_LINES.bottom; line++) lines.add(line)
+    for (const bar of this.staff.bars) {
+      for (const voice of bar.voices) {
+        for (const beat of voice.beats) {
+          for (const note of beat.notes) {
+            const line = this.lineOf(note)
+            if (line !== null) lines.add(line)
+          }
+        }
+      }
+    }
+    const sorted = [...lines].sort((a, b) => a - b)
+    this.linesCache = { revision: this.edits, lines: sorted }
+    return sorted
+  }
+
+  // A cursor position on this track: a string it has, or on a drum track the line of the note of `beat` nearest
+  // to it (the cursor picks one of the beat's notes; on a rest it keeps its line).
+  private fitString(string: number, beat: model.Beat): number {
+    if (!this.drums) return clampInt(string, 1, this.stringCount)
+    const wanted = Number.isFinite(string) ? string : 3
+    const lines = this.noteLines(beat)
+    if (lines.length === 0) return wanted
+    return lines.reduce((best, line) => (Math.abs(line - wanted) < Math.abs(best - wanted) ? line : best), lines[0])
+  }
+
+  /** The lines of a drum beat's notes, top first. */
+  private noteLines(beat: model.Beat): number[] {
+    const lines = beat.notes.map((note) => this.lineOf(note)).filter((line): line is number => line !== null)
+    return [...new Set(lines)].sort((a, b) => a - b)
   }
 
   private voice(bar: number): model.Voice {
@@ -208,7 +285,19 @@ export class TabEditor {
   }
 
   get note(): model.Note | null {
+    if (this.drums) return this.beat.notes.find((note) => this.lineOf(note) === this.cursor.string) ?? null
     return this.beat.notes.find((note) => note.string === this.cursor.string) ?? null
+  }
+
+  private drumState(): DrumState | null {
+    if (!this.drums) return null
+    const pieces = this.beat.notes
+      .map((note) => noteArticulation(this.track, note.percussionArticulation))
+      .filter((item) => item !== null)
+      .sort((a, b) => a.line - b.line)
+      .map((item) => ({ id: item.id, name: drumPieceById(item.id)?.name ?? `MIDI ${item.midi}` }))
+    const note = this.note
+    return { pieces, current: note ? (noteArticulation(this.track, note.percussionArticulation)?.id ?? null) : null }
   }
 
   state(): EditorState {
@@ -273,6 +362,7 @@ export class TabEditor {
       selection: this.selectionRange(),
       songTitle: this.score.title,
       songArtist: this.score.artist,
+      drum: this.drumState(),
     }
   }
 
@@ -297,7 +387,7 @@ export class TabEditor {
     else this.anchor = null
     const bar = clampInt(cursor.bar ?? this.cursor.bar, 0, this.staff.bars.length - 1)
     const beat = clampInt(cursor.beat ?? (bar === this.cursor.bar ? this.cursor.beat : 0), 0, this.voice(bar).beats.length - 1)
-    this.cursor = { bar, beat, string: clampInt(cursor.string ?? this.cursor.string, 1, this.stringCount) }
+    this.cursor = { bar, beat, string: this.fitString(cursor.string ?? this.cursor.string, this.voice(bar).beats[beat]) }
     this.lastDigit = null
     if (this.anchor && this.anchor.bar === bar && this.anchor.beat === beat) this.anchor = null
   }
@@ -339,7 +429,14 @@ export class TabEditor {
         return copy
       }),
       strings: this.stringCount,
+      drums: this.drums,
+      articulations: [...this.track.percussionArticulations],
     }
+  }
+
+  /** Beats paste only into a track of their kind: guitar into a track with strings, drums into a drum track. */
+  canPaste(clipboard: BeatClipboard): boolean {
+    return this.editable && clipboard.drums === this.drums
   }
 
   /**
@@ -351,7 +448,7 @@ export class TabEditor {
    */
   paste(clipboard: BeatClipboard): { droppedNotes: number; cutBeats: number } {
     const result = { droppedNotes: 0, cutBeats: 0 }
-    if (!this.editable || clipboard.beats.length === 0) return result
+    if (!this.canPaste(clipboard) || clipboard.beats.length === 0) return result
     const strings = this.stringCount
     this.change('track', () => {
       const bars = this.staff.bars
@@ -393,6 +490,18 @@ export class TabEditor {
         const voice = bars[bar].voices[0]
         const beat = cloneBeat(source)
         for (const note of [...beat.notes]) {
+          if (this.drums) {
+            // The same piece, as this track names it (added to its own list when it has one without the piece).
+            const entry = clipboard.articulations[note.percussionArticulation]
+            const value = this.drumValue(entry?.id ?? note.percussionArticulation, entry)
+            if (value === null) {
+              beat.removeNote(note)
+              result.droppedNotes++
+            } else {
+              note.percussionArticulation = value
+            }
+            continue
+          }
           const target = strings - (clipboard.strings - note.string)
           if (target < 1 || target > strings) {
             beat.removeNote(note)
@@ -467,8 +576,14 @@ export class TabEditor {
     this.moveTo({ bar: this.cursor.bar + delta, beat: 0 })
   }
 
-  /** Up the screen is a higher string number (the thinner strings are drawn on top). */
+  /** Up the screen is a higher string number (the thinner strings are drawn on top); on drums, the beat's next note up. */
   stepString(delta: number) {
+    if (this.drums) {
+      const lines = this.noteLines(this.beat)
+      const at = lines.indexOf(this.cursor.string)
+      if (lines.length > 0) this.moveTo({ string: lines[clampInt((at < 0 ? 0 : at) - delta, 0, lines.length - 1)] })
+      return
+    }
     this.moveTo({ string: this.cursor.string + delta })
   }
 
@@ -551,6 +666,12 @@ export class TabEditor {
    */
   typeDigit(digit: number, now = Date.now()) {
     if (!this.editable) return
+    if (this.drums) {
+      // On a drum track a digit puts a piece of the kit on the beat, or takes it off (see DRUM_PALETTE).
+      const id = paletteKey(String(digit))
+      if (id !== null) this.toggleDrumPiece(id)
+      return
+    }
     const key = `${this.cursor.bar}:${this.cursor.beat}:${this.cursor.string}`
     let fret = digit
     const previous = this.lastDigit
@@ -562,7 +683,7 @@ export class TabEditor {
   }
 
   setFret(fret: number) {
-    if (!this.editable) return
+    if (!this.editable || this.drums) return
     const value = clampInt(fret, 0, MAX_FRET)
     const existing = this.note
     if (existing && existing.fret === value && !existing.isTieDestination && !existing.isDead) return
@@ -587,12 +708,84 @@ export class TabEditor {
     })
   }
 
+  /**
+   * Puts a drum piece (by its id) on the cursor beat, on the piece's own line: a note already on that line becomes
+   * this piece (a beat holds one note per line), and the cursor moves to that line. On a track with its own list of
+   * pieces, a piece the list does not have is added to it.
+   */
+  setDrumPiece(id: number) {
+    if (!this.drums) return
+    const known = drumPieceById(id)
+    const list = this.track.percussionArticulations
+    const at = list.findIndex((entry) => entry.id === id)
+    const line = at >= 0 ? list[at].staffLine : known?.line
+    if (line === undefined || (list.length === 0 && !known)) return
+    const existing = this.beat.notes.find((note) => this.lineOf(note) === line)
+    const value = list.length === 0 ? id : at
+    if (existing && existing.percussionArticulation === value && !existing.isTieDestination) {
+      this.moveTo({ string: line })
+      return
+    }
+    // Adding to the track's list changes the track, not only this bar.
+    this.change(value < 0 ? 'track' : 'bar', () => {
+      const beat = this.beat
+      const target = this.drumValue(id, null)
+      if (target === null) return
+      const note = beat.notes.find((item) => this.lineOf(item) === line)
+      if (note) {
+        untie(note)
+        note.percussionArticulation = target
+        return
+      }
+      const created = new model.Note()
+      created.percussionArticulation = target
+      beat.isEmpty = false
+      beat.addNote(created)
+    })
+    this.moveTo({ string: line })
+  }
+
+  /** Takes the piece off the cursor beat when the beat has it, or else puts it on (setDrumPiece). */
+  toggleDrumPiece(id: number) {
+    if (!this.drums) return
+    const has = (note: model.Note) => noteArticulation(this.track, note.percussionArticulation)?.id === id
+    if (!this.beat.notes.some(has)) {
+      this.setDrumPiece(id)
+      return
+    }
+    this.change('bar', () => {
+      const note = this.beat.notes.find(has)
+      if (note) this.beat.removeNote(note)
+    })
+    // The cursor goes to a note the beat still has.
+    this.moveTo({})
+  }
+
+  /**
+   * The value a note of this drum track holds for the piece `id`: the id itself, or on a track with its own list
+   * the piece's index there (added to the list when missing, from alphaTab's table or else from `fallback`).
+   * Null when the track cannot take the piece.
+   */
+  private drumValue(id: number, fallback: model.InstrumentArticulation | null | undefined): number | null {
+    const list = this.track.percussionArticulations
+    const known = drumPieceById(id)
+    if (list.length === 0) return known ? id : null
+    const at = list.findIndex((entry) => entry.id === id)
+    if (at >= 0) return at
+    const added = known ? articulationFor(known) : fallback
+    if (!added) return null
+    list.push(added)
+    return list.length - 1
+  }
+
   removeNote() {
     if (!this.note) return
     this.change('bar', () => {
       const note = this.note
       if (note) this.beat.removeNote(note)
     })
+    // On drums the cursor goes to a note the beat still has.
+    if (this.drums) this.moveTo({})
   }
 
   /**
@@ -601,7 +794,7 @@ export class TabEditor {
    */
   moveNote(delta: number) {
     const note = this.note
-    if (!note || !this.editable) return
+    if (!note || !this.editable || this.drums) return
     const target = this.cursor.string + delta
     if (target < 1 || target > this.stringCount || this.beat.notes.some((item) => item.string === target)) return
     const tuning = this.staff.tuning
@@ -628,7 +821,7 @@ export class TabEditor {
   }
 
   toggle(flag: Flag) {
-    if (!this.editable) return
+    if (!this.editable || (this.drums && !DRUM_FLAGS.has(flag))) return
     if (BEAT_FLAGS.has(flag)) {
       this.toggleBeatFlag(flag as BeatFlag)
       return
@@ -714,8 +907,9 @@ export class TabEditor {
     return null
   }
 
-  private editNote(apply: (note: model.Note) => void) {
-    if (!this.note || !this.editable) return
+  // Note techniques are a guitar's, but for accents (`drumsToo`).
+  private editNote(apply: (note: model.Note) => void, drumsToo = false) {
+    if (!this.note || !this.editable || (this.drums && !drumsToo)) return
     this.change('bar', () => {
       const note = this.note
       if (note) apply(note)
@@ -763,7 +957,7 @@ export class TabEditor {
   }
 
   setAccent(accent: model.AccentuationType) {
-    this.editNote((note) => (note.accentuated = accent))
+    this.editNote((note) => (note.accentuated = accent), true)
   }
 
   /** A trill between the note and another fret on the same string; null removes it. */

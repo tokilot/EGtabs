@@ -13,6 +13,7 @@ import { DEFAULT_TONE_LIBRARY, findTone, type ToneLibrary } from '../../tones/li
 import { beatSolfege, type NoteNames } from './solfege.ts'
 import { transposeScore } from './transpose.ts'
 import { repairDrumArticulations } from './drumArticulations.ts'
+import { noteArticulation } from './drumPieces.ts'
 import { cleanTrackSwitches, switchesAfterRemoval, switchesFromOld, trackForBar, withTrackSwitch, type TrackSwitches } from './trackSwitches.ts'
 import { cleanTrackSounds, trackPresets, type ExtraSoundFont, type SoundFontEntry, type TrackSound, type TrackSounds } from './trackSounds.ts'
 
@@ -378,6 +379,32 @@ export class PlayerController {
     if (this.snapshot.playing && !wasPlaying) claimSound('tabs', () => this.snapshot.playing && this.playPause())
     else if (!this.snapshot.playing && wasPlaying) releaseSound('tabs')
     for (const listener of this.listeners) listener()
+    if (this.snapshot.editing && this.snapshot.playing !== wasPlaying) this.editingPlaybackChanged(this.snapshot.playing)
+  }
+
+  /**
+   * Playing while the tab is being edited (2026-11-17), to hear the changes: the score is the player's while it plays
+   * (a click moves the play position, a drag picks a loop range, as when not editing) and the editor rests, its panel
+   * closed and its keys off. Stopped, the editor takes over again, its cursor on the beat playback stopped at; a click
+   * or a key opens the panel there.
+   */
+  private editingPlaybackChanged(playing: boolean) {
+    const api = this.api
+    const editor = this.editor
+    if (!api) return
+    api.settings.player.enableUserInteraction = playing
+    if (!playing && editor) {
+      let beat = this.beatAtCursor()
+      if (beat && beat.voice.bar.staff === editor.staff) {
+        if (beat.voice.index !== 0) {
+          const first = beat.voice.bar.voices[0].beats
+          beat = [...first].reverse().find((item) => item.displayStart <= beat!.displayStart) ?? first[0]
+        }
+        editor.moveTo({ bar: beat.voice.bar.index, beat: beat.index })
+      }
+    }
+    this.editSelected = false
+    this.publishEditing(false)
   }
 
   /** What survives closing a song: display options, preferences, volume and the stand-alone metronome. */
@@ -448,6 +475,7 @@ export class PlayerController {
     // The layout worker sends the new bounds only after renderFinished; until then they are the old layout's.
     api.postRenderFinished.on(() => {
       this.measuredSpacing = null
+      this.measuredHalfStep = null
       this.measureSwitchMarks()
       if (this.snapshot.editing) this.publishEditing(true)
       // Another track, transposition or song: read the cursor's beat again.
@@ -691,6 +719,7 @@ export class PlayerController {
       this.baseScore = null
       this.renderPending = false
       this.measuredSpacing = null
+      this.measuredHalfStep = null
       const unsupported = source.kind === 'file' ? '无法识别曲谱文件格式。' : '在线曲谱导入失败。'
       this.update({ status: 'error', error: (error as Error).message || unsupported })
     }
@@ -912,8 +941,16 @@ export class PlayerController {
       api.pause()
       return
     }
-    // While editing, play what is written now, from the beat under the edit cursor.
-    if (this.snapshot.editing) this.syncEditedMidi(true)
+    // While editing, play what is written now, from the beat under the edit cursor (where playback stopped, unless
+    // the cursor was moved since).
+    if (this.snapshot.editing) {
+      this.syncEditedMidi(true)
+      const editor = this.editor
+      const tick = editor ? this.tickOf(editor) : null
+      const here = this.beatAtCursor()
+      const atCursor = here && editor && here.voice.bar.index === editor.cursor.bar && here.voice.bar.staff === editor.staff && (here.voice.index !== 0 || here.index === editor.cursor.beat)
+      if (tick !== null && !atCursor) api.tickPosition = tick
+    }
     if (this.snapshot.countIn) this.startCountIn(api)
     else api.play()
   }
@@ -1088,12 +1125,13 @@ export class PlayerController {
    */
   /**
    * The tab with a new, empty track at the end (2026-11-17), as a Guitar Pro 7 file to save as the song's edited
-   * tab; then addTrack() with the same score takes it in. Not while the tab is being edited, like deleting.
+   * tab; then addTrack() with the same score takes it in. Not while the tab is being edited, like deleting. With
+   * `drums`, a drum track.
    */
-  trackAdditionScore(name: string): alphaTab.model.Score | null {
+  trackAdditionScore(name: string, drums = false): alphaTab.model.Score | null {
     const api = this.api
     if (!api || !this.baseScore || this.snapshot.status !== 'ready' || this.snapshot.editing) return null
-    return withNewTrack(this.baseScore, api.settings, name)
+    return withNewTrack(this.baseScore, api.settings, name, drums)
   }
 
   trackAdditionFile(score: alphaTab.model.Score): Uint8Array | null {
@@ -1106,7 +1144,7 @@ export class PlayerController {
     const track = score.tracks[index]
     this.originalScore = score
     this.update({
-      tracks: [...this.snapshot.tracks, { index, name: track.name, isPercussion: false, program: track.playbackInfo.program, volume: 1, mute: false, solo: false }],
+      tracks: [...this.snapshot.tracks, { index, name: track.name, isPercussion: track.isPercussion, program: track.playbackInfo.program, volume: 1, mute: false, solo: false }],
       barCount: score.masterBars.length,
     })
     this.rerender(this.snapshot.transpose, {})
@@ -1464,14 +1502,14 @@ export class PlayerController {
     const editor = this.editor
     if (!editor || !this.snapshot.editing || !this.editSelected) return 0
     this.clipboard = editor.copy()
-    this.update({ editing: { ...this.snapshot.editing, clipboard: this.clipboard.beats.length } })
+    this.update({ editing: { ...this.snapshot.editing, clipboard: editor.canPaste(this.clipboard) ? this.clipboard.beats.length : 0 } })
     return this.clipboard.beats.length
   }
 
   /** Pastes the copied beats at the cursor of the track being edited; null when there was nothing to paste. */
   pasteBeats(): { droppedNotes: number; cutBeats: number } | null {
     const clipboard = this.clipboard
-    if (!clipboard || !this.editor?.editable) return null
+    if (!clipboard || !this.editor?.canPaste(clipboard)) return null
     let result: { droppedNotes: number; cutBeats: number } | null = null
     this.edit((editor) => {
       result = editor.paste(clipboard)
@@ -1536,10 +1574,7 @@ export class PlayerController {
     }
     const bounds = lookup.findBeat(beat)
     let string = editor.cursor.string
-    if (bounds) {
-      const lines = this.stringLines(bounds.barBounds, editor)
-      string = Math.round((lines.lowest - y) / lines.spacing) + 1
-    }
+    if (bounds) string = this.staffLines(bounds.barBounds, editor).at(y)
     editor.moveTo({ bar: beat.voice.bar.index, beat: beat.index, string }, extend && this.editSelected)
     this.editSelected = true
     this.publishEditing(true)
@@ -1773,7 +1808,16 @@ export class PlayerController {
     const selectionBoxes = this.editSelected ? this.measureSelection(editor) : []
     const header = this.measureHeader(editor.score)
     this.update({
-      editing: { ...editor.state(), editable: editor.editable, selected: this.editSelected, ...boxes, selectionBoxes, ...header, clipboard: this.clipboard?.beats.length ?? 0 },
+      // Copied beats count only where they can go: guitar beats into tracks with strings, drums into drum tracks.
+      editing: {
+        ...editor.state(),
+        editable: editor.editable,
+        selected: this.editSelected,
+        ...boxes,
+        selectionBoxes,
+        ...header,
+        clipboard: this.clipboard && editor.canPaste(this.clipboard) ? this.clipboard.beats.length : 0,
+      },
     })
     // The page may not show the new drawing yet: look again once it does.
     if (!header.titleBox && editor.score.title) this.remeasureHeaderSoon()
@@ -1825,9 +1869,8 @@ export class PlayerController {
     for (const beat of editor.selectedBeats()) {
       const bounds = lookup.findBeat(beat)
       if (!bounds) continue
-      const { lowest, spacing } = this.stringLines(bounds.barBounds, editor)
-      const top = lowest - (editor.stringCount - 1) * spacing - spacing * 0.8
-      const box = { x: bounds.realBounds.x, y: top, w: bounds.realBounds.w, h: lowest - top + spacing * 0.8 }
+      const { top, bottom, unit } = this.staffLines(bounds.barBounds, editor)
+      const box = { x: bounds.realBounds.x, y: top - unit * 0.8, w: bounds.realBounds.w, h: bottom - top + unit * 1.6 }
       const last = boxes[boxes.length - 1]
       if (last && Math.abs(last.y - box.y) < 1 && box.x >= last.x - 1) last.w = box.x + box.w - last.x
       else boxes.push(box)
@@ -1838,15 +1881,86 @@ export class PlayerController {
   private measureCursor(editor: TabEditor): { noteBox: Box | null; beatBox: Box | null } {
     const bounds = this.api?.boundsLookup?.findBeat(editor.beat)
     if (!bounds) return { noteBox: null, beatBox: null }
-    const { lowest, spacing } = this.stringLines(bounds.barBounds, editor)
-    const lineY = lowest - (editor.cursor.string - 1) * spacing
-    const top = lowest - (editor.stringCount - 1) * spacing
+    const { y, top, bottom, unit } = this.staffLines(bounds.barBounds, editor)
+    const lineY = y(editor.cursor.string)
     const column = bounds.visualBounds
-    const width = Math.max(column.w + 8, spacing * 1.4)
+    const width = Math.max(column.w + 8, unit * 1.4)
     return {
-      noteBox: { x: column.x + column.w / 2 - width / 2, y: lineY - spacing * 0.6, w: width, h: spacing * 1.2 },
-      beatBox: { x: bounds.realBounds.x, y: top - spacing * 0.8, w: bounds.realBounds.w, h: lowest - top + spacing * 1.6 },
+      noteBox: { x: column.x + column.w / 2 - width / 2, y: lineY - unit * 0.6, w: width, h: unit * 1.2 },
+      beatBox: { x: bounds.realBounds.x, y: top - unit * 0.8, w: bounds.realBounds.w, h: bottom - top + unit * 1.6 },
     }
+  }
+
+  /**
+   * Where the cursor's positions are drawn in a bar's row: the y of a string (or of a drum line), the top and bottom
+   * of the positions the cursor can take, the distance between two neighbouring lines of the staff, and the
+   * position under a y. A drum track's notes are on the five-line staff, at half a line's distance per step.
+   */
+  private staffLines(barBounds: alphaTab.rendering.BarBounds, editor: TabEditor): { y: (string: number) => number; top: number; bottom: number; unit: number; at: (y: number) => number } {
+    if (editor.drums) {
+      const { top, half } = this.drumStaff(barBounds, editor)
+      const lines = editor.drumLines()
+      // The whole staff at least, and any line in use over or under it.
+      return {
+        y: (line) => top + line * half,
+        top: top + Math.min(0, lines[0]) * half,
+        bottom: top + Math.max(8, lines[lines.length - 1]) * half,
+        unit: half * 2,
+        at: (y) => Math.round((y - top) / half),
+      }
+    }
+    const { lowest, spacing } = this.stringLines(barBounds, editor)
+    return {
+      y: (string) => lowest - (string - 1) * spacing,
+      top: lowest - (editor.stringCount - 1) * spacing,
+      bottom: lowest,
+      unit: spacing,
+      at: (y) => Math.round((lowest - y) / spacing) + 1,
+    }
+  }
+
+  // Where a drum staff is drawn (2026-11-17): the y of its top line and the step from one line or space to the next.
+  // As for the strings, fitted to the note heads of the whole row (each drawn on its piece's line); a row without
+  // notes takes the step found before and its rests, which sit on the middle line.
+  private measuredHalfStep: number | null = null
+  private drumStaff(barBounds: alphaTab.rendering.BarBounds, editor: TabEditor): { top: number; half: number } {
+    const staff = editor.staff
+    const points: Array<[number, number]> = []
+    const rests: number[] = []
+    const masters = barBounds.masterBarBounds.staffSystemBounds?.bars ?? [barBounds.masterBarBounds]
+    for (const master of masters) {
+      for (const bar of master.bars) {
+        for (const beat of bar.beats) {
+          const notes = (beat.notes ?? []).filter((note) => note.note.beat.voice.bar.staff === staff)
+          for (const note of notes) {
+            const line = noteArticulation(staff.track, note.note.percussionArticulation)?.line
+            const head = note.noteHeadBounds
+            if (line !== undefined) points.push([line, head.y + head.h / 2])
+          }
+          const item = beat.beat as alphaTab.model.Beat | undefined
+          if (!beat.notes?.length && item?.voice?.bar.staff === staff && item.voice.index === 0 && item.notes.length === 0) {
+            rests.push(beat.visualBounds.y + beat.visualBounds.h / 2)
+          }
+        }
+      }
+    }
+    const lines = new Set(points.map(([line]) => line))
+    if (lines.size >= 2) {
+      // A straight line through the points: y = top + line * half.
+      const meanLine = points.reduce((sum, [line]) => sum + line, 0) / points.length
+      const meanY = points.reduce((sum, [, y]) => sum + y, 0) / points.length
+      const spread = points.reduce((sum, [line]) => sum + (line - meanLine) ** 2, 0)
+      const half = points.reduce((sum, [line, y]) => sum + (line - meanLine) * (y - meanY), 0) / spread
+      if (half > 0) {
+        this.measuredHalfStep = half
+        return { top: meanY - meanLine * half, half }
+      }
+    }
+    const bar = barBounds.visualBounds
+    const half = this.measuredHalfStep ?? bar.h / 16
+    if (points.length) return { top: points[0][1] - points[0][0] * half, half }
+    if (rests.length) return { top: rests.sort((a, b) => a - b)[Math.floor(rests.length / 2)] - 4 * half, half }
+    return { top: bar.y + bar.h / 2 - 4 * half, half }
   }
 
   // Where the strings of a staff are drawn: the y of the lowest string and the distance between two. alphaTab

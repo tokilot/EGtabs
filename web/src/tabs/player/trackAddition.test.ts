@@ -1,6 +1,7 @@
-import { importer, Settings } from '@coderline/alphatab'
+import { importer, model, Settings } from '@coderline/alphatab'
 import { describe, expect, it } from 'vitest'
 import { barsText } from './scoreText.ts'
+import { TabEditor } from './tabEditor.ts'
 import { NEW_TRACK_PROGRAM, withNewTrack } from './trackEdits.ts'
 
 const TEX = `\\title "Add"
@@ -34,5 +35,23 @@ describe('a new track', () => {
     expect(barsText(added, 2, 1, 2).split('\n').slice(1)).toEqual(['bar 1 (4/4): 1) 1 rest', 'bar 2 (3/4): 1) 2 rest | 2) 4 rest'])
     // The tracks there were are as they were.
     expect(barsText(added, 0, 1, 2)).toBe(barsText(score, 0, 1, 2))
+  })
+
+  it('can be a drum track instead: the drum channel, no strings, editable on its staff', () => {
+    const settings = new Settings()
+    const score = importer.ScoreLoader.loadAlphaTex(TEX, settings)
+    const added = withNewTrack(score, settings, 'Drums 2', true)
+    const track = added.tracks[2]
+    expect(track.isPercussion).toBe(true)
+    expect([track.playbackInfo.primaryChannel, track.playbackInfo.secondaryChannel, track.playbackInfo.program]).toEqual([9, 9, 0])
+    expect(track.staves[0].tuning).toEqual([])
+    expect(track.staves[0].showTablature).toBe(false)
+    expect(track.staves[0].bars.every((bar) => bar.clef === model.Clef.Neutral)).toBe(true)
+    expect(barsText(added, 2, 1, 2).split('\n').slice(1)).toEqual(['bar 1 (4/4): 1) 1 rest', 'bar 2 (3/4): 1) 2 rest | 2) 4 rest'])
+    // A kick and a snare on its first beat play as such.
+    const editor = new TabEditor(added, 2, settings)
+    editor.typeDigit(1)
+    editor.typeDigit(2)
+    expect(editor.beat.notes.map((note) => note.realValue).sort()).toEqual([36, 38])
   })
 })

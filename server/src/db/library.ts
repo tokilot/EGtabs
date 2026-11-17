@@ -43,6 +43,7 @@ interface SongRow {
   settings: string
   created_at: string
   last_opened_at: string | null
+  modified_at: string | null
 }
 
 /**
@@ -117,6 +118,7 @@ function toSong(row: SongRow): Song {
     settings,
     createdAt: row.created_at,
     lastOpenedAt: row.last_opened_at,
+    modifiedAt: row.modified_at,
   }
 }
 
@@ -144,6 +146,8 @@ export class Library {
     const columns = this.db.prepare('PRAGMA table_info(songs)').all() as unknown as Array<{ name: string }>
     if (!columns.some((column) => column.name === 'edited')) this.db.exec('ALTER TABLE songs ADD COLUMN edited INTEGER NOT NULL DEFAULT 0')
     if (!columns.some((column) => column.name === 'folder')) this.db.exec('ALTER TABLE songs ADD COLUMN folder TEXT')
+    // When the tab itself last changed (2026-11-17): saved from the editor, put back as imported, another revision.
+    if (!columns.some((column) => column.name === 'modified_at')) this.db.exec('ALTER TABLE songs ADD COLUMN modified_at TEXT')
     this.bringInTabFiles(path.join(dataDir, 'tabs'))
   }
 
@@ -251,7 +255,7 @@ export class Library {
       // A favourite's, or (should its folder be gone) kept with the song rather than lost.
       this.putFile(id, 'edited', bytes)
     }
-    this.db.prepare('UPDATE songs SET edited = 1 WHERE id = ?').run(id)
+    this.db.prepare('UPDATE songs SET edited = 1, modified_at = ? WHERE id = ?').run(new Date().toISOString(), id)
     return this.get(id)
   }
 
@@ -262,7 +266,7 @@ export class Library {
     this.dropFile(id, 'edited')
     const folder = this.contentFolder(song)
     if (folder) rmSync(path.join(folder, EDITED_FILE), { force: true })
-    this.db.prepare('UPDATE songs SET edited = 0 WHERE id = ?').run(id)
+    this.db.prepare('UPDATE songs SET edited = 0, modified_at = ? WHERE id = ?').run(new Date().toISOString(), id)
     return this.get(id)
   }
 
@@ -320,8 +324,8 @@ export class Library {
   /** Points a Songsterr song at another revision of itself (already cached); a favourite keeps the new one in user.db. */
   async setRevision(id: number, input: Pick<SongsterrSongInput, 'revisionId' | 'revisionDate' | 'trackCount' | 'defaultTrack'>): Promise<Song | null> {
     this.db
-      .prepare('UPDATE songs SET revision_id = ?, revision_date = ?, track_count = ?, default_track = ? WHERE id = ?')
-      .run(input.revisionId, input.revisionDate, input.trackCount, input.defaultTrack, id)
+      .prepare('UPDATE songs SET revision_id = ?, revision_date = ?, track_count = ?, default_track = ?, modified_at = ? WHERE id = ?')
+      .run(input.revisionId, input.revisionDate, input.trackCount, input.defaultTrack, new Date().toISOString(), id)
     const song = this.get(id)
     if (song?.favorite && song.songsterrId !== null) {
       const revision = await this.online.cached(song.songsterrId, input.revisionId)

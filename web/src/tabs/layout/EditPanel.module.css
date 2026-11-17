@@ -204,3 +204,9 @@
   color: var(--text-muted);
   font-size: 12px;
 }
+
+/* The digit key that picks a drum piece, before its name. */
+.key {
+  font-variant-numeric: tabular-nums;
+  opacity: 0.6;
+}

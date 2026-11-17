@@ -82,6 +82,8 @@ npm run fixtures     # 把测试曲目下载到 test/songs/
 - 鼓音符的 `percussionArticulation`：音轨有自己的 `percussionArticulations` 时是表内下标，没有时是鼓件编号（我们的在线曲谱和 MIDI 转换器都是后者）。
   原版 GP7 导出器对没有表的音轨写默认表却照抄编号，读回来全错成邦戈、康加（2026-11-17）；补丁已改导出器，之前存坏的谱在
   `onScoreLoaded` 里由 `drumArticulations.ts` 修复。鼓组：路由只接管鼓通道的 program 0，`midiDrums` 分支也读路由表（补丁）。
+- 鼓轨编辑：编辑器光标的 `string` 在鼓轨上是谱线位置（从第一线往下数的半格，3 是小鼓那一间），只停在这一拍已有的音上；面板的分组和数字键在 `DRUM_PALETTE`。可选的鼓件 `drumPieces.ts`
+  抄自 alphaTab 没导出的 `PercussionMapper` 表；升级后 `drumEditing.test.ts` 会把它和 alphaTab 实际写出的表逐项比对。
 - `alphatab-patches.ts` 找不到原文就报错；升级 alphaTab 后先跑构建，逐条核对补丁。
 
 ## 开发服务器

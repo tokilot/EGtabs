@@ -54,9 +54,10 @@ export function ScoreView() {
           // While editing, a click on the score puts the edit cursor there (alphaTab still moves its own cursor);
           // with shift it selects from the cursor to there.
           // Held down and moved, it selects from the beat the press started on to the one under the pointer.
-          onPointerDown={editing ? (event) => player.editClickAt(event.clientX, event.clientY, event.shiftKey) : undefined}
+          // While it plays, the score is the player's again: a click moves the play position, a drag picks a loop.
+          onPointerDown={editing && !state.playing ? (event) => player.editClickAt(event.clientX, event.clientY, event.shiftKey) : undefined}
           onPointerMove={
-            editing
+            editing && !state.playing
               ? (event) => {
                   if (event.buttons & 1) player.editDragTo(event.clientX, event.clientY)
                 }
@@ -89,7 +90,8 @@ export function ScoreView() {
               aria-hidden
             />
           )}
-          {editing?.noteBox && editing.editable && (
+          {/* On a drum beat the box marks the note picked; a rest has none. */}
+          {editing?.noteBox && editing.editable && (!editing.drum || editing.note) && (
             <div
               className={styles.editNote}
               data-has-note={editing.note ? '' : undefined}

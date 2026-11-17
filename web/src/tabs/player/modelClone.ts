@@ -126,6 +126,8 @@ export interface TrackContent {
   name: string
   shortName: string
   program: number
+  /** A drum track's own list of pieces (drum notes may point into it). */
+  articulations: model.InstrumentArticulation[]
   staves: Array<{ tuning: model.Tuning; capo: number; bars: BarContent[] }>
 }
 
@@ -138,6 +140,7 @@ export function snapshotTrack(track: model.Track): TrackContent {
     name: track.name,
     shortName: track.shortName,
     program: track.playbackInfo.program,
+    articulations: [...track.percussionArticulations],
     staves: track.staves.map((staff) => ({ tuning: copyTuning(staff.stringTuning), capo: staff.capo, bars: staff.bars.map(snapshotBar) })),
   }
 }
@@ -146,6 +149,7 @@ export function restoreTrack(track: model.Track, content: TrackContent) {
   track.name = content.name
   track.shortName = content.shortName
   track.playbackInfo.program = content.program
+  track.percussionArticulations = [...content.articulations]
   track.staves.forEach((staff, index) => {
     const saved = content.staves[index]
     if (!saved) return

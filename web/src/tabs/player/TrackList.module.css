@@ -128,6 +128,7 @@
 
 /* Below the tracks: a new empty track (2026-11-17). */
 .addTrack {
+  flex: 1;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -149,4 +150,29 @@
 .addTrack:disabled {
   opacity: 0.5;
   cursor: default;
+}
+
+/* "New track": a guitar or a drum track. */
+.addMenu {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.addMenu button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border: none;
+  border-radius: var(--radius);
+  background: none;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.addMenu button:hover {
+  background: var(--surface);
 }

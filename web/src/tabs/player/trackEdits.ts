@@ -311,9 +311,10 @@ export const NEW_TRACK_PROGRAM = 27
 /**
  * The tab with one more track at the end (2026-11-17): a six-string guitar in standard tuning, rests filling every
  * bar, on the first pair of MIDI channels no track uses (never the drums' 9). Its instrument and tuning are then
- * picked in "edit track".
+ * picked in "edit track". With `drums`, a drum track instead: on the drum channel, a five-line staff without strings,
+ * its notes the pieces of alphaTab's table (no list of its own; see drumPieces.ts).
  */
-export function withNewTrack(score: model.Score, settings: Settings, name: string): model.Score {
+export function withNewTrack(score: model.Score, settings: Settings, name: string, drums = false): model.Score {
   const copy = model.JsonConverter.jsonToScore(model.JsonConverter.scoreToJson(score), settings)
   const used = new Set(copy.tracks.flatMap((track) => [track.playbackInfo.primaryChannel, track.playbackInfo.secondaryChannel]))
   const free: number[] = []
@@ -322,18 +323,29 @@ export function withNewTrack(score: model.Score, settings: Settings, name: strin
   track.name = name
   track.shortName = name.slice(0, 10)
   track.ensureStaveCount(1)
-  track.playbackInfo.program = NEW_TRACK_PROGRAM
-  track.playbackInfo.primaryChannel = free[0] ?? 0
-  track.playbackInfo.secondaryChannel = free[1] ?? free[0] ?? 1
   const staff = track.staves[0]
-  staff.stringTuning = new model.Tuning('', [64, 59, 55, 50, 45, 40], false)
-  staff.showTablature = true
-  staff.showStandardNotation = false
+  if (drums) {
+    track.playbackInfo.program = 0
+    track.playbackInfo.primaryChannel = 9
+    track.playbackInfo.secondaryChannel = 9
+    staff.isPercussion = true
+    staff.showTablature = false
+    staff.showStandardNotation = true
+  } else {
+    track.playbackInfo.program = NEW_TRACK_PROGRAM
+    track.playbackInfo.primaryChannel = free[0] ?? 0
+    track.playbackInfo.secondaryChannel = free[1] ?? free[0] ?? 1
+    staff.stringTuning = new model.Tuning('', [64, 59, 55, 50, 45, 40], false)
+    staff.showTablature = true
+    staff.showStandardNotation = false
+  }
   copy.addTrack(track)
   copy.masterBars.forEach((masterBar, index) => {
     // The key the other tracks are written in, bar by bar.
     const reference = copy.tracks[0].staves[0].bars[index]
     const bar = new model.Bar()
+    // Drums are written with the neutral (percussion) clef.
+    if (drums) bar.clef = model.Clef.Neutral
     if (reference) {
       bar.keySignature = reference.keySignature
       bar.keySignatureType = reference.keySignatureType

@@ -2,10 +2,10 @@ import { Star, Trash2 } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import * as api from '../api.ts'
 import type { Song } from '../api.ts'
-import { sortByName } from '../../shared/alphabetical.ts'
 import { translate, useLanguage } from '../../shared/ui/i18n.ts'
 import { useSong } from './useSong.ts'
 import { PlaylistPanel } from './PlaylistPanel.tsx'
+import { SONG_ORDERS, sortSongs, storedSongOrder, storeSongOrder, type SongOrder } from './songOrder.ts'
 import styles from './SongList.module.css'
 
 interface SongListProps {
@@ -14,13 +14,14 @@ interface SongListProps {
 }
 
 /**
- * "My tabs": everything in the library by the first letter of the title (2026-11-10; then the artist), with a
- * favourites filter; and the playlists, which keep their own order.
+ * "My tabs": everything in the library, with a favourites filter, newest first, oldest first or by the first letter
+ * of the title (songOrder.ts); and the playlists, which keep their own order.
  */
 export function SongList({ onPick }: SongListProps) {
   const { t } = useLanguage()
   const { song: current, open, close, replace, libraryVersion, libraryChanged } = useSong()
   const [songs, setSongs] = useState<Song[] | null>(null)
+  const [order, setOrder] = useState<SongOrder>(storedSongOrder)
   const [view, setView] = useState<'all' | 'favorites' | 'playlists'>('all')
   const favoritesOnly = view === 'favorites'
   const [error, setError] = useState<string | null>(null)
@@ -32,7 +33,7 @@ export function SongList({ onPick }: SongListProps) {
       .listSongs({ favorite: favoritesOnly })
       .then((list) => {
         if (cancelled) return
-        setSongs(sortByName(list, (song) => `${song.title} ${song.artist}`))
+        setSongs(list)
         setError(null)
       })
       .catch((cause) => {
@@ -48,6 +49,12 @@ export function SongList({ onPick }: SongListProps) {
     if (current?.id === updated.id) replace(updated)
     libraryChanged()
   }
+
+  const pickOrder = (value: SongOrder) => {
+    setOrder(value)
+    storeSongOrder(value)
+  }
+  const shown = songs && sortSongs(songs, order)
 
   const remove = async (song: Song) => {
     if (!window.confirm(translate('是否删除「{title}」？', { title: song.title }))) return
@@ -68,6 +75,16 @@ export function SongList({ onPick }: SongListProps) {
         <button type="button" role="tab" aria-selected={view === 'playlists'} onClick={() => setView('playlists')}>
           {t('播放列表')}
         </button>
+        {/* Playlists keep their own order. */}
+        {view !== 'playlists' && (
+          <select className={styles.order} aria-label={t('排序')} title={t('排序')} value={order} onChange={(event) => pickOrder(event.target.value as SongOrder)}>
+            {SONG_ORDERS.map(([value, label]) => (
+              <option key={value} value={value}>
+                {t(label)}
+              </option>
+            ))}
+          </select>
+        )}
       </div>
 
       {view === 'playlists' ? (
@@ -81,7 +98,7 @@ export function SongList({ onPick }: SongListProps) {
       )}
 
       <ul>
-        {songs?.map((song) => (
+        {shown?.map((song) => (
           <li key={song.id} className={song.id === current?.id ? styles.current : undefined}>
             <button
               type="button"

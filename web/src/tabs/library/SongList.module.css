@@ -19,6 +19,17 @@
   color: var(--text-muted);
 }
 
+.order {
+  height: 28px;
+  margin-left: auto;
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: none;
+  color: var(--text-muted);
+  font: inherit;
+}
+
 .filters button[aria-selected='true'] {
   background: var(--accent);
   border-color: var(--accent);

@@ -108,6 +108,22 @@ describe('where a tab is kept', () => {
   })
 })
 
+describe('when a tab last changed', () => {
+  it('is noted when the edited copy is saved or dropped, not when the song is starred or practised', async () => {
+    const { library, call } = start()
+    const song = await library.addFile('Riff.gp', new Uint8Array([1, 2, 3]))
+    expect(song.modifiedAt).toBeNull()
+    await call('PATCH', `/api/songs/${song.id}`, { favorite: true, settings: { speed: 0.8 } })
+    expect(library.get(song.id)?.modifiedAt).toBeNull()
+    const saved = await library.saveEdited(song.id, new Uint8Array([9]))
+    expect(saved?.modifiedAt).not.toBeNull()
+    expect(saved!.modifiedAt! >= song.createdAt).toBe(true)
+    await new Promise((resolve) => setTimeout(resolve, 5))
+    const restored = await library.discardEdited(song.id)
+    expect(restored!.modifiedAt! > saved!.modifiedAt!).toBe(true)
+  })
+})
+
 describe('starting the server', () => {
   it('makes the data folder on first start: user.db and the folders filled by hand', async () => {
     const fresh = path.join(dataDir, 'not yet')
